@@ -1,0 +1,89 @@
+#pragma once
+
+#include <QObject>
+#include <QString>
+#include <QJsonArray>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QFile>
+#include <QTimer>
+
+#include "keeper_interface.h"
+#include "logos_api.h"
+#include "logos_api_client.h"
+
+struct KeeperFile {
+    QString name;
+    QString size;
+    QString cid;
+    QString status;   // "pending" | "downloading" | "uploading" | "inscribing" | "done" | "failed"
+    QString error;
+};
+
+struct KeeperItem {
+    QString identifier;
+    QString title;
+    QString status;   // "queued" | "active" | "done" | "failed" | "cancelled"
+    QList<KeeperFile> files;
+    int currentFile = 0;
+};
+
+class KeeperPlugin : public QObject, public KeeperInterface
+{
+    Q_OBJECT
+    Q_PLUGIN_METADATA(IID KeeperInterface_iid FILE "metadata.json")
+    Q_INTERFACES(KeeperInterface PluginInterface)
+
+public:
+    KeeperPlugin();
+    ~KeeperPlugin() override = default;
+
+    QString name()    const override { return "keeper"; }
+    QString version() const override { return "0.1.0"; }
+    Q_INVOKABLE void initLogos(LogosAPI* api);
+
+    Q_INVOKABLE QString preserveItem(const QString& urlOrId) override;
+    Q_INVOKABLE QString preserveCollection(const QString& name, int limit) override;
+    Q_INVOKABLE QString cancelItem(const QString& identifier) override;
+    Q_INVOKABLE QString getQueue() override;
+    Q_INVOKABLE QString getLog() override;
+    Q_INVOKABLE QString getConfig() override;
+    Q_INVOKABLE QString setConfig(const QString& json) override;
+
+signals:
+    void eventResponse(const QString& name, const QVariantList& data);
+
+private:
+    // IA helpers
+    QString parseIdentifier(const QString& urlOrId);
+    void    fetchMetadata(const QString& identifier);
+    void    processNextFile();
+    void    downloadFile(const QString& identifier, const KeeperFile& file);
+    void    uploadToStash(const QString& identifier, const QString& localPath, const QString& fileName);
+    void    inscribeToBeacon(const QString& identifier, const QString& fileName, const QString& cid);
+    void    advanceQueue();
+
+    // Persistence
+    void loadQueue();
+    void saveQueue();
+    void appendLog(const KeeperItem& item);
+    QString persistPath(const QString& filename);
+
+    // State
+    void emitEvent(const QString& name, const QVariantList& data);
+    QString itemsToJson(const QList<KeeperItem>& items);
+
+    LogosAPI*        logosAPI       = nullptr;
+    LogosAPIClient*  stashClient_   = nullptr;
+    LogosAPIClient*  beaconClient_  = nullptr;
+
+    QList<KeeperItem>  queue_;
+    QList<QJsonObject> log_;
+    bool               busy_        = false;
+
+    QNetworkAccessManager* nam_ = nullptr;
+
+    // Config
+    int  maxFilesPerItem_    = 20;
+    bool skipDerivatives_    = true;
+};

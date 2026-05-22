@@ -1,0 +1,5 @@
+result
+result-*
+build/
+*.o
+*.a

@@ -1,0 +1,29 @@
+{
+  "name": "keeper",
+  "version": "0.1.0",
+  "type": "core",
+  "category": "storage",
+  "description": "Preserve Internet Archive collections — download, store CIDs, inscribe on-chain",
+  "main": "keeper_plugin",
+  "dependencies": [],
+
+  "nix": {
+    "packages": {
+      "build": [],
+      "runtime": []
+    },
+    "external_libraries": [],
+    "cmake": {
+      "find_packages": ["Qt6 COMPONENTS Core Qml Network"],
+      "extra_sources": [
+        "src/keeper_plugin.cpp"
+      ],
+      "extra_include_dirs": [
+        "src"
+      ],
+      "extra_link_libraries": [
+        "Qt6::Network"
+      ]
+    }
+  }
+}
