@@ -9,6 +9,7 @@
 #include <QTimer>
 
 #include "keeper_interface.h"
+#include "keeper_http_bridge.h"
 #include "logos_api.h"
 #include "logos_api_client.h"
 
@@ -85,6 +86,8 @@ private:
     bool               busy_        = false;
 
     QNetworkAccessManager* nam_ = nullptr;
+
+    KeeperHttpBridge* httpBridge_ = nullptr;
 
     // Config
     int  maxFilesPerItem_    = 20;

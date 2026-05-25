@@ -22,6 +22,11 @@ void KeeperPlugin::initLogos(LogosAPI* api)
     { QFile f("/tmp/keeper_debug.log"); if(f.open(QIODevice::Append|QIODevice::Text)) QTextStream(&f) << "initLogos called\n"; }
     logosAPI = api;
     loadQueue();
+
+    // Start HTTP bridge for the Chrome extension (localhost:7355)
+    httpBridge_ = new KeeperHttpBridge(this, this);
+    httpBridge_->listen(7355);
+
     // Defer queue resume + client init so the event loop is running
     QTimer::singleShot(2000, this, [this]{ advanceQueue(); });
     qDebug() << "KeeperPlugin: initialized";
@@ -311,11 +316,14 @@ void KeeperPlugin::downloadFile(const QString& identifier, const KeeperFile& fil
     connect(reply, &QNetworkReply::finished, this, [this, reply, f, tmpPath, identifier, fileName] {
         { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text)) QTextStream(&dbg) << "download finished callback, error=" << reply->error() << "\n"; }
         f->close();
+        { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text)) QTextStream(&dbg) << "after f->close()\n"; }
         reply->deleteLater();
+        { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text)) QTextStream(&dbg) << "after reply->deleteLater()\n"; }
 
         KeeperItem* item = nullptr;
         for (auto& i : queue_)
             if (i.identifier == identifier) { item = &i; break; }
+        { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text)) QTextStream(&dbg) << "item=" << (item ? item->identifier : "null") << "\n"; }
 
         if (!item || item->status == "cancelled") {
             QFile::remove(tmpPath);
@@ -328,6 +336,7 @@ void KeeperPlugin::downloadFile(const QString& identifier, const KeeperFile& fil
         KeeperFile* kf = nullptr;
         for (auto& ff : item->files)
             if (ff.name == fileName) { kf = &ff; break; }
+        { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text)) QTextStream(&dbg) << "kf=" << (kf ? kf->name : "null") << "\n"; }
 
         if (reply->error() != QNetworkReply::NoError) {
             if (kf) { kf->status = "failed"; kf->error = reply->errorString(); }
@@ -339,12 +348,24 @@ void KeeperPlugin::downloadFile(const QString& identifier, const KeeperFile& fil
             return;
         }
 
+        { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text)) QTextStream(&dbg) << "before delete f\n"; }
         delete f;
+        { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text)) QTextStream(&dbg) << "after delete f, kf=" << (kf ? kf->name : "null") << "\n"; }
         if (kf) kf->status = "uploading";
+        { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text)) QTextStream(&dbg) << "before emitEvent itemProgress\n"; }
         emitEvent("itemProgress", {QVariantMap{
             {"id", identifier}, {"file", fileName}, {"phase", "upload"}, {"pct", 0}
         }});
-        uploadToStash(identifier, tmpPath, fileName);
+        { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text)) QTextStream(&dbg) << "after emitEvent, scheduling uploadToStash\n"; }
+        // Defer uploadToStash so this callback returns to the event loop first.
+        // emitEvent above runs the event loop via Qt Remote Objects; calling
+        // logosAPI->getClient() while inside that nested loop causes bad_alloc.
+        QString id2   = identifier;
+        QString path2 = tmpPath;
+        QString name2 = fileName;
+        QTimer::singleShot(0, this, [this, id2, path2, name2](){
+            uploadToStash(id2, path2, name2);
+        });
     });
 }
 
@@ -355,17 +376,25 @@ void KeeperPlugin::uploadToStash(const QString& identifier, const QString& local
     // Deleting the file before stash's deferred upload runs causes "file does not exist".
     // Files in /tmp are cleaned up by the OS; we also clean them in finishItem.
 
+    { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text)) QTextStream(&dbg) << "uploadToStash enter id=" << identifier << " file=" << fileName << "\n"; }
+
     if (!stashClient_ && logosAPI)
         stashClient_ = logosAPI->getClient("stash");
+
+    { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text)) QTextStream(&dbg) << "uploadToStash after getClient, stashClient_=" << (stashClient_ ? "ok" : "null") << "\n"; }
 
     KeeperItem* item = nullptr;
     for (auto& i : queue_)
         if (i.identifier == identifier) { item = &i; break; }
     if (!item) return;
 
+    { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text)) QTextStream(&dbg) << "uploadToStash found item, files=" << item->files.size() << "\n"; }
+
     KeeperFile* kf = nullptr;
     for (auto& ff : item->files)
         if (ff.name == fileName) { kf = &ff; break; }
+
+    { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text)) QTextStream(&dbg) << "uploadToStash found kf=" << (kf ? kf->name : "null") << "\n"; }
 
     if (stashClient_) {
         { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text))
