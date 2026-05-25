@@ -444,11 +444,11 @@ void KeeperPlugin::inscribeToBeacon(const QString& identifier, const QString& ci
     QString label = QString("ia:%1").arg(identifier);
 
     if (!beaconClient_ && logosAPI)
-        beaconClient_ = logosAPI->getClient("beacon");
+        beaconClient_ = logosAPI->getClient("logos_beacon");
     if (beaconClient_) {
         // Pass source="keeper" so beacon deduplicates correctly:
         // the QML stash watcher would otherwise re-register the same CID as source="notes".
-        beaconClient_->invokeRemoteMethod("beacon", "pinCid", cid, label, QString("keeper"));
+        beaconClient_->invokeRemoteMethod("logos_beacon", "pinCid", cid, label, QString("keeper"));
     } else {
         qDebug() << "KeeperPlugin: no beacon client — skipping inscription for" << cid;
     }
