@@ -23,7 +23,8 @@ struct KeeperFile {
 struct KeeperItem {
     QString identifier;
     QString title;
-    QString status;   // "queued" | "active" | "done" | "failed" | "cancelled"
+    QString status;         // "queued" | "active" | "inscribing" | "done" | "failed" | "cancelled"
+    QString collectionCid;  // final CID inscribed to beacon
     QList<KeeperFile> files;
     int currentFile = 0;
 };
@@ -60,7 +61,10 @@ private:
     void    processNextFile();
     void    downloadFile(const QString& identifier, const KeeperFile& file);
     void    uploadToStash(const QString& identifier, const QString& localPath, const QString& fileName);
-    void    inscribeToBeacon(const QString& identifier, const QString& fileName, const QString& cid);
+    void    uploadCollectionManifest(const QString& identifier);
+    void    pollForManifestCid(const QString& identifier, const QString& manifestPath, int attempts);
+    void    finishItem(const QString& identifier, const QString& collectionCid);
+    void    inscribeToBeacon(const QString& identifier, const QString& cid);
     void    advanceQueue();
 
     // Persistence
@@ -73,7 +77,6 @@ private:
     void emitEvent(const QString& name, const QVariantList& data);
     QString itemsToJson(const QList<KeeperItem>& items);
 
-    LogosAPI*        logosAPI       = nullptr;
     LogosAPIClient*  stashClient_   = nullptr;
     LogosAPIClient*  beaconClient_  = nullptr;
 
