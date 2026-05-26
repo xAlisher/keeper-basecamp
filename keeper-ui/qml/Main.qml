@@ -359,11 +359,37 @@ Item {
             Layout.fillHeight: true
             spacing: 6
 
-            Text {
-                text: "Log"
-                font.pixelSize: 13
-                font.bold: true
-                color: root.textPrimary
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+
+                Text {
+                    text: "Log"
+                    font.pixelSize: 13
+                    font.bold: true
+                    color: root.textPrimary
+                }
+
+                Item { Layout.fillWidth: true }
+
+                Text {
+                    text: "Clear"
+                    font.pixelSize: 11
+                    color: clearArea.containsMouse ? root.textSecondary : root.textMuted
+                    visible: logModel.count > 0
+
+                    MouseArea {
+                        id: clearArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            if (typeof logos === "undefined" || !logos.callModule) return
+                            logos.callModule("keeper", "clearLog", [])
+                            root.refresh()
+                        }
+                    }
+                }
             }
 
             Rectangle {
@@ -419,25 +445,27 @@ Item {
                         }
 
                         // Beacon line
-                        Row {
+                        TextEdit {
                             width: parent.width
-                            spacing: 0
-
-                            Text {
-                                text: "[" + fmtTime(entryTs) + "] Beacon → Logos Blockchain: "
-                                font.pixelSize: 11
-                                font.family: "monospace"
-                                color: root.textSecondary
-                            }
-
-                            TextEdit {
-                                text: entryExplorerUrl || (entryCollectionCid ? "confirming…" : "")
-                                font.pixelSize: 11
-                                font.family: "monospace"
-                                color: entryExplorerUrl ? root.successGreen : root.textMuted
-                                readOnly: true
-                                selectByMouse: true
-                                width: parent.width - implicitWidth
+                            wrapMode: TextEdit.WrapAnywhere
+                            readOnly: true
+                            selectByMouse: true
+                            font.pixelSize: 11
+                            font.family: "monospace"
+                            textFormat: TextEdit.RichText
+                            text: {
+                                var prefix = "[" + fmtTime(entryTs) + "] Beacon → Logos Blockchain: "
+                                var url = entryExplorerUrl
+                                var muted = root.textMuted
+                                var secondary = root.textSecondary
+                                var green = root.successGreen
+                                if (url)
+                                    return "<span style='color:" + secondary + "'>" + prefix + "</span>"
+                                         + "<span style='color:" + green + "'>" + url + "</span>"
+                                if (entryCollectionCid)
+                                    return "<span style='color:" + secondary + "'>" + prefix + "</span>"
+                                         + "<span style='color:" + muted + "'>confirming\u2026</span>"
+                                return ""
                             }
                         }
                     }
