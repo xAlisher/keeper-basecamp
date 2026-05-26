@@ -277,10 +277,10 @@ void KeeperPlugin::processNextFile()
         item->currentFile++;
 
     if (item->currentFile >= item->files.size()) {
-        // All files uploaded — build collection JSON and inscribe one CID
+        // All files uploaded — inscribe directly with ia:{identifier} as the stable key
         item->status = "inscribing";
         saveQueue();
-        uploadCollectionJson(item->identifier);
+        inscribeToBeacon(item->identifier, "ia:" + item->identifier);
         return;
     }
 
@@ -456,71 +456,6 @@ void KeeperPlugin::pollForFileCid(const QString& identifier, const QString& file
     });
 }
 
-void KeeperPlugin::uploadCollectionJson(const QString& identifier)
-{
-    // Build a collection JSON with all file CIDs collected above.
-    const KeeperItem* item = nullptr;
-    for (const auto& i : std::as_const(queue_))
-        if (i.identifier == identifier) { item = &i; break; }
-
-    if (!stashClient_ && logosAPI)
-        stashClient_ = logosAPI->getClient("stash");
-
-    QJsonObject col;
-    col["id"] = identifier;
-    QJsonArray fileArr;
-    qint64 totalSize = 0;
-    if (item) {
-        if (!item->title.isEmpty() && item->title != identifier)
-            col["title"] = item->title;
-        for (const auto& f : item->files) {
-            if (!f.cid.isEmpty())
-                fileArr.append(QJsonObject{{"name", f.name}, {"cid", f.cid}});
-            totalSize += f.size.toLongLong();
-        }
-    }
-    col["files"]     = fileArr;
-    col["totalSize"] = totalSize;
-
-    QString colPath = QDir::tempPath() + "/keeper-" + identifier + "-collection.json";
-    { QFile wf(colPath);
-      if (!wf.open(QIODevice::WriteOnly)) { finishItem(identifier, {}); return; }
-      wf.write(QJsonDocument(col).toJson(QJsonDocument::Compact)); }
-
-    if (!stashClient_) { finishItem(identifier, {}); return; }
-
-    stashClient_->invokeRemoteMethod("stash", "upload", colPath, "keeper");
-    pollForManifestCid(identifier, QFileInfo(colPath).fileName(), 60);
-}
-
-void KeeperPlugin::pollForManifestCid(const QString& identifier, const QString& manifestFile,
-                                       int attempts)
-{
-    if (!stashClient_ && logosAPI)
-        stashClient_ = logosAPI->getClient("stash");
-
-    if (stashClient_) {
-        QString latestJson = stashClient_->invokeRemoteMethod("stash", "getLatestLogosResult").toString();
-        QJsonObject latest = QJsonDocument::fromJson(latestJson.toUtf8()).object();
-        QString latestFile = QFileInfo(latest.value("file").toString()).fileName();
-        QString latestCid  = latest.value("cid").toString();
-
-        if (latestFile == manifestFile && !latestCid.isEmpty()) {
-            inscribeToBeacon(identifier, latestCid);
-            return;
-        }
-    }
-
-    if (attempts <= 0) {
-        finishItem(identifier, {});
-        return;
-    }
-
-    QTimer::singleShot(1000, this, [this, identifier, manifestFile, attempts]() {
-        pollForManifestCid(identifier, manifestFile, attempts - 1);
-    });
-}
-
 void KeeperPlugin::inscribeToBeacon(const QString& identifier, const QString& cid)
 {
     // Build rich label from the item still in queue_
@@ -615,7 +550,6 @@ void KeeperPlugin::finishItem(const QString& identifier, const QString& collecti
 {
     // Clean up temp files
     QFile::remove(QDir::tempPath() + "/keeper-" + identifier + "-metadata.json");
-    QFile::remove(QDir::tempPath() + "/keeper-" + identifier + "-collection.json");
 
     for (auto& i : queue_) {
         if (i.identifier == identifier) {

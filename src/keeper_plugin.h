@@ -65,8 +65,6 @@ private:
     void    uploadToStash(const QString& identifier, const QString& localPath, const QString& fileName);
     void    pollForFileCid(const QString& identifier, const QString& fileName,
                            const QString& tmpPath, int attempts);
-    void    uploadCollectionJson(const QString& identifier);
-    void    pollForManifestCid(const QString& identifier, const QString& manifestFile, int attempts);
     void    finishItem(const QString& identifier, const QString& collectionCid);
     void    inscribeToBeacon(const QString& identifier, const QString& cid);
     void    pollForTxHash(const QString& identifier, const QString& cid, int attempts);
