@@ -52,6 +52,8 @@ public:
     Q_INVOKABLE QString getConfig() override;
     Q_INVOKABLE QString setConfig(const QString& json) override;
     Q_INVOKABLE QString clearLog();
+    Q_INVOKABLE QString getInscriptionQueue() const;
+    Q_INVOKABLE QString markInscribed(const QString& cid);
 
 signals:
     void eventResponse(const QString& name, const QVariantList& data);
@@ -73,6 +75,7 @@ private:
     // Persistence
     void loadQueue();
     void saveQueue();
+    void saveInscriptionQueue();
     void appendLog(const KeeperItem& item);
     QString persistPath(const QString& filename);
 
@@ -85,6 +88,7 @@ private:
 
     QList<KeeperItem>  queue_;
     QList<QJsonObject> log_;
+    QList<QJsonObject> inscriptionQueue_;
     bool               busy_        = false;
 
     QNetworkAccessManager* nam_ = nullptr;

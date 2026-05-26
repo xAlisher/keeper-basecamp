@@ -150,6 +150,20 @@ QString KeeperPlugin::clearLog()
     return R"({"ok":true})";
 }
 
+QString KeeperPlugin::getInscriptionQueue() const
+{
+    QJsonArray arr;
+    for (const auto& e : inscriptionQueue_) arr.append(e);
+    return QJsonDocument(arr).toJson(QJsonDocument::Compact);
+}
+
+QString KeeperPlugin::markInscribed(const QString& cid)
+{
+    inscriptionQueue_.removeIf([&](const QJsonObject& e){ return e["cid"].toString() == cid; });
+    saveInscriptionQueue();
+    return R"({"ok":true})";
+}
+
 QString KeeperPlugin::getConfig()
 {
     return QString(R"({"maxFilesPerItem":%1,"skipDerivatives":%2})")
@@ -483,16 +497,12 @@ void KeeperPlugin::inscribeToBeacon(const QString& identifier, const QString& ci
     if (label.isEmpty())
         label = QString("ia:%1").arg(identifier);
 
-    // beaconClient_ is pre-initialised in initLogos; this guard is a safety net only.
-    if (!beaconClient_ && logosAPI)
-        beaconClient_ = logosAPI->getClient("logos_beacon");
-    if (beaconClient_) {
-        // Pass source="keeper" so beacon deduplicates correctly:
-        // the QML stash watcher would otherwise re-register the same CID as source="notes".
-        beaconClient_->invokeRemoteMethod("logos_beacon", "pinCid", cid, label, QString("keeper"));
-    } else {
-        qDebug() << "KeeperPlugin: no beacon client — skipping inscription for" << cid;
-    }
+    // Add to inscription queue — beacon polls getInscriptionQueue() and inscribes.
+    QJsonObject entry;
+    entry["cid"]   = cid;
+    entry["label"] = label;
+    inscriptionQueue_.append(entry);
+    saveInscriptionQueue();
 
     emitEvent("itemPreserved", {QVariantMap{{"id", identifier}, {"cid", cid}}});
     finishItem(identifier, cid);
@@ -618,8 +628,26 @@ QString KeeperPlugin::persistPath(const QString& filename)
     return base + "/" + filename;
 }
 
+void KeeperPlugin::saveInscriptionQueue()
+{
+    QJsonArray arr;
+    for (const auto& e : inscriptionQueue_) arr.append(e);
+    QFile f(persistPath("keeper-inscription-queue.json"));
+    if (f.open(QIODevice::WriteOnly))
+        f.write(QJsonDocument(arr).toJson(QJsonDocument::Compact));
+}
+
 void KeeperPlugin::loadQueue()
 {
+    // Load inscription queue (survives crash/restart)
+    QFile iqf(persistPath("keeper-inscription-queue.json"));
+    if (iqf.open(QIODevice::ReadOnly)) {
+        QJsonDocument doc = QJsonDocument::fromJson(iqf.readAll());
+        if (doc.isArray())
+            for (const auto& v : doc.array())
+                inscriptionQueue_.append(v.toObject());
+    }
+
     // Load completed log
     QFile lf(persistPath("keeper-log.json"));
     if (lf.open(QIODevice::ReadOnly)) {
