@@ -19,7 +19,6 @@ Item {
 
     // ── State ─────────────────────────────────────────────────────────────
     property bool   pollBusy: false
-    property int    logSeenCount: 0
 
     // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -99,10 +98,11 @@ Item {
             }
         }
 
-        // Log (append-only — C++ appends newest last)
+        // Log — full rebuild each poll so txHash updates are picked up
         var lRaw = callModuleParse(logos.callModule("keeper", "getLog", []))
-        if (Array.isArray(lRaw) && lRaw.length > root.logSeenCount) {
-            for (var k = root.logSeenCount; k < lRaw.length; k++) {
+        if (Array.isArray(lRaw)) {
+            logModel.clear()
+            for (var k = 0; k < lRaw.length; k++) {
                 var entry = lRaw[k]
                 var cidList = []
                 if (Array.isArray(entry.files)) {
@@ -111,15 +111,19 @@ Item {
                         if (c) cidList.push(fmtCid(c))
                     }
                 }
+                var txHash = entry.txHash || ""
                 logModel.append({
-                    entryTs:    entry.ts           || 0,
-                    entryTitle: entry.title        || entry.id || "",
+                    entryTs:    entry.ts    || 0,
+                    entryTitle: entry.title || entry.id || "",
                     entryCids:  cidList.join(", "),
                     entrySize:  fmtSize(entry.totalSize || 0),
-                    entryCollectionCid: entry.collectionCid || ""
+                    entryCollectionCid: entry.collectionCid || "",
+                    entryTxHash: txHash,
+                    entryExplorerUrl: txHash
+                        ? "https://testnet.blockchain.logos.co/web/explorer/transactions/" + txHash
+                        : ""
                 })
             }
-            root.logSeenCount = lRaw.length
         }
 
         root.pollBusy = false
@@ -393,6 +397,8 @@ Item {
                         required property string entryCids
                         required property string entrySize
                         required property string entryCollectionCid
+                        required property string entryTxHash
+                        required property string entryExplorerUrl
 
                         width: logView.width
                         spacing: 1
@@ -425,10 +431,10 @@ Item {
                             }
 
                             TextEdit {
-                                text: entryCollectionCid
+                                text: entryExplorerUrl || (entryCollectionCid ? "confirming…" : "")
                                 font.pixelSize: 11
                                 font.family: "monospace"
-                                color: root.successGreen
+                                color: entryExplorerUrl ? root.successGreen : root.textMuted
                                 readOnly: true
                                 selectByMouse: true
                                 width: parent.width - implicitWidth

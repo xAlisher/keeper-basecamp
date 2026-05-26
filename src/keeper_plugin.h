@@ -66,6 +66,7 @@ private:
     void    pollForManifestCid(const QString& identifier, const QString& manifestPath, int attempts);
     void    finishItem(const QString& identifier, const QString& collectionCid);
     void    inscribeToBeacon(const QString& identifier, const QString& cid);
+    void    pollForTxHash(const QString& identifier, const QString& cid, int attempts);
     void    advanceQueue();
 
     // Persistence

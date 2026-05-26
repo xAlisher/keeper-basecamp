@@ -443,6 +443,54 @@ void KeeperPlugin::inscribeToBeacon(const QString& identifier, const QString& ci
 
     emitEvent("itemPreserved", {QVariantMap{{"id", identifier}, {"cid", cid}}});
     finishItem(identifier, cid);
+
+    // Poll beacon for the tx hash (inscriptionId) once the inscription confirms.
+    // pinCid queues async — the tx hash is set later by confirmInscription.
+    if (beaconClient_ && !cid.isEmpty()) {
+        QString cidCopy = cid;
+        QString idCopy  = identifier;
+        QTimer::singleShot(5000, this, [this, idCopy, cidCopy]() {
+            pollForTxHash(idCopy, cidCopy, 24); // up to 24 × 5s = 2 min
+        });
+    }
+}
+
+void KeeperPlugin::pollForTxHash(const QString& identifier, const QString& cid, int attempts)
+{
+    if (!beaconClient_) return;
+
+    QString logJson = beaconClient_->invokeRemoteMethod("logos_beacon", "getInscriptionLog").toString();
+    QJsonArray entries = QJsonDocument::fromJson(logJson.toUtf8()).array();
+
+    for (const auto& v : entries) {
+        QJsonObject e = v.toObject();
+        if (e["cid"].toString() == cid) {
+            QString txHash = e["inscriptionId"].toString();
+            if (!txHash.isEmpty()) {
+                // Update the log entry with the tx hash and re-save
+                for (auto& obj : log_) {
+                    if (obj["id"].toString() == identifier) {
+                        obj["txHash"] = txHash;
+                        break;
+                    }
+                }
+                QJsonArray arr;
+                for (const auto& o : log_) arr.append(o);
+                QFile f(persistPath("keeper-log.json"));
+                if (f.open(QIODevice::WriteOnly))
+                    f.write(QJsonDocument(arr).toJson(QJsonDocument::Compact));
+                emitEvent("logUpdated", {QVariantMap{{"id", identifier}, {"txHash", txHash}}});
+                return;
+            }
+            break; // found the entry but no tx hash yet — keep polling
+        }
+    }
+
+    if (attempts > 0) {
+        QTimer::singleShot(5000, this, [this, identifier, cid, attempts]() {
+            pollForTxHash(identifier, cid, attempts - 1);
+        });
+    }
 }
 
 void KeeperPlugin::finishItem(const QString& identifier, const QString& collectionCid)
