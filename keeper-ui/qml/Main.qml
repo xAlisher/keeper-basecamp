@@ -18,8 +18,9 @@ Item {
     readonly property color borderColor:   "#383838"
 
     // ── State ─────────────────────────────────────────────────────────────
-    property bool   pollBusy: false
-    property int    logSeenCount: 0
+    property bool   pollBusy:       false
+    property bool   bridgeRunning:  false
+    property int    bridgePort:     7355
 
     // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -31,6 +32,23 @@ Item {
             }
             return tmp
         } catch(e) { return null }
+    }
+
+    function fmtTime(ms) {
+        return Qt.formatTime(new Date(ms), "hh:mm:ss")
+    }
+
+    function fmtSize(bytes) {
+        if (!bytes || bytes <= 0)    return ""
+        if (bytes >= 1073741824)     return (bytes / 1073741824).toFixed(1) + "G"
+        if (bytes >= 1048576)        return (bytes / 1048576).toFixed(1) + "M"
+        if (bytes >= 1024)           return (bytes / 1024).toFixed(1) + "K"
+        return bytes + "B"
+    }
+
+    function fmtCid(cid) {
+        if (!cid || cid.length <= 16) return cid || ""
+        return cid.slice(0, 8) + "…" + cid.slice(-4)
     }
 
     function statusIcon(status) {
@@ -58,6 +76,13 @@ Item {
             return
         }
 
+        // Bridge status
+        var bRaw = callModuleParse(logos.callModule("keeper", "getBridgeStatus", []))
+        if (bRaw) {
+            root.bridgeRunning = bRaw.running === true
+            if (bRaw.port) root.bridgePort = bRaw.port
+        }
+
         // Queue
         var qRaw = callModuleParse(logos.callModule("keeper", "getQueue", []))
         if (Array.isArray(qRaw)) {
@@ -82,18 +107,32 @@ Item {
             }
         }
 
-        // Log (append-only)
+        // Log — full rebuild each poll so txHash updates are picked up
         var lRaw = callModuleParse(logos.callModule("keeper", "getLog", []))
-        if (Array.isArray(lRaw) && lRaw.length > root.logSeenCount) {
-            for (var k = root.logSeenCount; k < lRaw.length; k++) {
+        if (Array.isArray(lRaw)) {
+            logModel.clear()
+            for (var k = 0; k < lRaw.length; k++) {
                 var entry = lRaw[k]
-                if (logModel.count >= 200) logModel.remove(0)
+                var cidList = []
+                if (Array.isArray(entry.files)) {
+                    for (var fi = 0; fi < entry.files.length; fi++) {
+                        var c = entry.files[fi].cid
+                        if (c) cidList.push(fmtCid(c))
+                    }
+                }
+                var txHash = entry.txHash || ""
                 logModel.append({
-                    cid:   entry.cid   || "",
-                    label: entry.label || entry.file || ""
+                    entryTs:    entry.ts    || 0,
+                    entryTitle: entry.title || entry.id || "",
+                    entryCids:  cidList.join(", "),
+                    entrySize:  fmtSize(entry.totalSize || 0),
+                    entryCollectionCid: entry.collectionCid || "",
+                    entryTxHash: txHash,
+                    entryExplorerUrl: txHash
+                        ? "https://testnet.blockchain.logos.co/web/explorer/transactions/" + txHash
+                        : ""
                 })
             }
-            root.logSeenCount = lRaw.length
         }
 
         root.pollBusy = false
@@ -109,6 +148,14 @@ Item {
     }
 
     Component.onCompleted: root.refresh()
+
+    // Clipboard helper — zero-opacity TextEdit used to copy text to clipboard
+    // Must NOT be visible:false — invisible items can't receive focus needed for copy()
+    TextEdit {
+        id: clipboard
+        opacity: 0
+        width: 1; height: 1
+    }
 
     // ── Background ────────────────────────────────────────────────────────
 
@@ -144,6 +191,35 @@ Item {
                     color: root.textSecondary
                     wrapMode: Text.Wrap
                     Layout.fillWidth: true
+                }
+            }
+
+            // Bridge status pill
+            Rectangle {
+                height: 28
+                implicitWidth: bridgePillRow.implicitWidth + 20
+                radius: 14
+                color: Qt.rgba(0.149, 0.149, 0.149, 0.85)
+                border.color: root.borderColor
+                border.width: 1
+                Layout.alignment: Qt.AlignVCenter
+
+                RowLayout {
+                    id: bridgePillRow
+                    anchors { left: parent.left; leftMargin: 10; verticalCenter: parent.verticalCenter }
+                    spacing: 6
+
+                    Rectangle {
+                        width: 7; height: 7; radius: 4
+                        Layout.alignment: Qt.AlignVCenter
+                        color: root.bridgeRunning ? root.successGreen : root.errorRed
+                    }
+
+                    Text {
+                        text: root.bridgeRunning ? ("Bridge :" + root.bridgePort) : "Bridge offline"
+                        font.pixelSize: 11
+                        color: root.textPrimary
+                    }
                 }
             }
         }
@@ -212,11 +288,37 @@ Item {
             Layout.fillWidth: true
             spacing: 6
 
-            Text {
-                text: "Queue"
-                font.pixelSize: 13
-                font.bold: true
-                color: root.textPrimary
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+
+                Text {
+                    text: "Queue"
+                    font.pixelSize: 13
+                    font.bold: true
+                    color: root.textPrimary
+                }
+
+                Item { Layout.fillWidth: true }
+
+                Text {
+                    text: "Clear"
+                    font.pixelSize: 11
+                    color: clearQueueArea.containsMouse ? root.textSecondary : root.textMuted
+                    visible: queueModel.count > 0
+
+                    MouseArea {
+                        id: clearQueueArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            if (typeof logos === "undefined" || !logos.callModule) return
+                            logos.callModule("keeper", "clearQueue", [])
+                            root.refresh()
+                        }
+                    }
+                }
             }
 
             Rectangle {
@@ -329,11 +431,37 @@ Item {
             Layout.fillHeight: true
             spacing: 6
 
-            Text {
-                text: "Inscription log"
-                font.pixelSize: 13
-                font.bold: true
-                color: root.textPrimary
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+
+                Text {
+                    text: "Log"
+                    font.pixelSize: 13
+                    font.bold: true
+                    color: root.textPrimary
+                }
+
+                Item { Layout.fillWidth: true }
+
+                Text {
+                    text: "Clear"
+                    font.pixelSize: 11
+                    color: clearArea.containsMouse ? root.textSecondary : root.textMuted
+                    visible: logModel.count > 0
+
+                    MouseArea {
+                        id: clearArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            if (typeof logos === "undefined" || !logos.callModule) return
+                            logos.callModule("keeper", "clearLog", [])
+                            root.refresh()
+                        }
+                    }
+                }
             }
 
             Rectangle {
@@ -348,41 +476,99 @@ Item {
                 Text {
                     anchors.centerIn: parent
                     visible: logModel.count === 0
-                    text: "No inscriptions yet"
+                    text: "No entries yet"
                     color: root.textMuted
                     font.pixelSize: 11
-                    font.family: "Courier New, monospace"
                 }
 
                 ListView {
                     id: logView
                     anchors { fill: parent; margins: 10 }
                     clip: true
-                    spacing: 2
+                    spacing: 6
                     onCountChanged: Qt.callLater(() => logView.positionViewAtEnd())
                     model: ListModel { id: logModel }
 
-                    delegate: RowLayout {
-                        required property string cid
-                        required property string label
+                    delegate: Column {
+                        required property int    entryTs
+                        required property string entryTitle
+                        required property string entryCids
+                        required property string entrySize
+                        required property string entryCollectionCid
+                        required property string entryTxHash
+                        required property string entryExplorerUrl
 
                         width: logView.width
-                        spacing: 8
+                        spacing: 1
 
-                        Text {
-                            text: cid.length > 12 ? cid.slice(0, 8) + "…" + cid.slice(-4) : cid
+                        // Stash line
+                        TextEdit {
+                            width: parent.width
+                            text: {
+                                var t = "[" + fmtTime(entryTs) + "] Stash → Logos Storage: " + entryTitle
+                                if (entrySize)  t += " (" + entrySize + ")"
+                                if (entryCids)  t += ", CIDs: " + entryCids
+                                return t
+                            }
                             font.pixelSize: 11
-                            font.family: "Courier New, monospace"
-                            color: root.successGreen
+                            font.family: "monospace"
+                            color: root.textSecondary
+                            wrapMode: TextEdit.Wrap
+                            readOnly: true
+                            selectByMouse: true
                         }
 
-                        Text {
-                            text: label
-                            font.pixelSize: 11
-                            font.family: "Courier New, monospace"
-                            color: root.textSecondary
-                            elide: Text.ElideRight
-                            Layout.fillWidth: true
+                        // Beacon line
+                        RowLayout {
+                            width: parent.width
+                            spacing: 6
+                            visible: entryExplorerUrl !== "" || entryCollectionCid !== ""
+
+                            TextEdit {
+                                Layout.fillWidth: true
+                                wrapMode: TextEdit.WrapAnywhere
+                                readOnly: true
+                                selectByMouse: true
+                                font.pixelSize: 11
+                                font.family: "monospace"
+                                textFormat: TextEdit.RichText
+                                text: {
+                                    var prefix = "[" + fmtTime(entryTs) + "] Beacon → Logos Blockchain: "
+                                    var url = entryExplorerUrl
+                                    var muted = root.textMuted
+                                    var secondary = root.textSecondary
+                                    var green = root.successGreen
+                                    if (url)
+                                        return "<span style='color:" + secondary + "'>" + prefix + "</span>"
+                                             + "<span style='color:" + green + "'>" + url + "</span>"
+                                    if (entryCollectionCid)
+                                        return "<span style='color:" + secondary + "'>" + prefix + "</span>"
+                                             + "<span style='color:" + muted + "'>confirming\u2026</span>"
+                                    return ""
+                                }
+                            }
+
+                            Text {
+                                id: copyBtn
+                                visible: entryExplorerUrl !== ""
+                                text: "copy"
+                                font.pixelSize: 10
+                                color: copyBtnArea.containsMouse ? root.textPrimary : root.textMuted
+                                Layout.alignment: Qt.AlignVCenter
+
+                                MouseArea {
+                                    id: copyBtnArea
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        clipboard.text = entryExplorerUrl
+                                        clipboard.forceActiveFocus()
+                                        clipboard.selectAll()
+                                        clipboard.copy()
+                                    }
+                                }
+                            }
                         }
                     }
                 }

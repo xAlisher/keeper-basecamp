@@ -9,6 +9,7 @@
 #include <QTimer>
 
 #include "keeper_interface.h"
+#include "keeper_http_bridge.h"
 #include "logos_api.h"
 #include "logos_api_client.h"
 
@@ -23,7 +24,8 @@ struct KeeperFile {
 struct KeeperItem {
     QString identifier;
     QString title;
-    QString status;   // "queued" | "active" | "done" | "failed" | "cancelled"
+    QString status;         // "queued" | "active" | "inscribing" | "done" | "failed" | "cancelled"
+    QString collectionCid;  // final CID inscribed to beacon
     QList<KeeperFile> files;
     int currentFile = 0;
 };
@@ -49,6 +51,11 @@ public:
     Q_INVOKABLE QString getLog() override;
     Q_INVOKABLE QString getConfig() override;
     Q_INVOKABLE QString setConfig(const QString& json) override;
+    Q_INVOKABLE QString clearLog();
+    Q_INVOKABLE QString clearQueue();
+    Q_INVOKABLE QString getBridgeStatus() const;
+    Q_INVOKABLE QString getInscriptionQueue() const;
+    Q_INVOKABLE QString markInscribed(const QString& cid);
 
 signals:
     void eventResponse(const QString& name, const QVariantList& data);
@@ -60,12 +67,17 @@ private:
     void    processNextFile();
     void    downloadFile(const QString& identifier, const KeeperFile& file);
     void    uploadToStash(const QString& identifier, const QString& localPath, const QString& fileName);
-    void    inscribeToBeacon(const QString& identifier, const QString& fileName, const QString& cid);
+    void    pollForFileCid(const QString& identifier, const QString& fileName,
+                           const QString& tmpPath, int attempts);
+    void    finishItem(const QString& identifier, const QString& collectionCid);
+    void    inscribeToBeacon(const QString& identifier, const QString& cid);
+    void    pollForTxHash(const QString& identifier, const QString& cid, int attempts);
     void    advanceQueue();
 
     // Persistence
     void loadQueue();
     void saveQueue();
+    void saveInscriptionQueue();
     void appendLog(const KeeperItem& item);
     QString persistPath(const QString& filename);
 
@@ -73,17 +85,23 @@ private:
     void emitEvent(const QString& name, const QVariantList& data);
     QString itemsToJson(const QList<KeeperItem>& items);
 
-    LogosAPI*        logosAPI       = nullptr;
     LogosAPIClient*  stashClient_   = nullptr;
     LogosAPIClient*  beaconClient_  = nullptr;
 
     QList<KeeperItem>  queue_;
     QList<QJsonObject> log_;
+    QList<QJsonObject> inscriptionQueue_;
     bool               busy_        = false;
 
     QNetworkAccessManager* nam_ = nullptr;
 
+    KeeperHttpBridge* httpBridge_    = nullptr;
+    bool              bridgeRunning_ = false;
+    quint16           bridgePort_    = 7355;
+
     // Config
     int  maxFilesPerItem_    = 20;
     bool skipDerivatives_    = true;
+
+    QString m_persistencePath;
 };
