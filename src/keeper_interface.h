@@ -31,9 +31,6 @@ public:
     // Configuration: {"maxFilesPerItem":<n>,"skipDerivatives":bool}
     Q_INVOKABLE virtual QString getConfig() = 0;
     Q_INVOKABLE virtual QString setConfig(const QString& json) = 0;
-
-signals:
-    void eventResponse(const QString& name, const QVariantList& data);
 };
 
 #define KeeperInterface_iid "org.logos.KeeperInterface"

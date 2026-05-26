@@ -10,11 +10,11 @@
   "nix": {
     "packages": {
       "build": [],
-      "runtime": []
+      "runtime": ["qt6.qthttpserver"]
     },
     "external_libraries": [],
     "cmake": {
-      "find_packages": ["Qt6 COMPONENTS Core Qml Network"],
+      "find_packages": ["Qt6 COMPONENTS Core Qml Network HttpServer"],
       "extra_sources": [
         "src/keeper_plugin.cpp"
       ],
@@ -22,7 +22,8 @@
         "src"
       ],
       "extra_link_libraries": [
-        "Qt6::Network"
+        "Qt6::Network",
+        "Qt6::HttpServer"
       ]
     }
   }

@@ -19,7 +19,6 @@ KeeperPlugin::KeeperPlugin()
 
 void KeeperPlugin::initLogos(LogosAPI* api)
 {
-    { QFile f("/tmp/keeper_debug.log"); if(f.open(QIODevice::Append|QIODevice::Text)) QTextStream(&f) << "initLogos called\n"; }
     logosAPI = api;
     loadQueue();
 
@@ -27,8 +26,17 @@ void KeeperPlugin::initLogos(LogosAPI* api)
     httpBridge_ = new KeeperHttpBridge(this, this);
     httpBridge_->listen(7355);
 
-    // Defer queue resume + client init so the event loop is running
-    QTimer::singleShot(2000, this, [this]{ advanceQueue(); });
+    // Defer client init + queue resume so the event loop is running.
+    // Pre-initialising stashClient_ and beaconClient_ HERE (before any
+    // downloads start) avoids calling getClient() after download callbacks
+    // and QRO event emissions, where std::bad_alloc has been observed.
+    QTimer::singleShot(2000, this, [this]{
+        if (logosAPI) {
+            stashClient_  = logosAPI->getClient("stash");
+            beaconClient_ = logosAPI->getClient("logos_beacon");
+        }
+        advanceQueue();
+    });
     qDebug() << "KeeperPlugin: initialized";
 }
 
@@ -36,9 +44,7 @@ void KeeperPlugin::initLogos(LogosAPI* api)
 
 QString KeeperPlugin::preserveItem(const QString& urlOrId)
 {
-    { QFile f("/tmp/keeper_debug.log"); if(f.open(QIODevice::Append|QIODevice::Text)) QTextStream(&f) << "preserveItem called: " << urlOrId << "\n"; }
     QString id = parseIdentifier(urlOrId);
-    { QFile f("/tmp/keeper_debug.log"); if(f.open(QIODevice::Append|QIODevice::Text)) QTextStream(&f) << "parsed id: [" << id << "]\n"; }
     if (id.isEmpty())
         return R"({"success":false,"error":"could not parse identifier"})";
 
@@ -54,9 +60,7 @@ QString KeeperPlugin::preserveItem(const QString& urlOrId)
     queue_.append(item);
     saveQueue();
 
-    { QFile f("/tmp/keeper_debug.log"); if(f.open(QIODevice::Append|QIODevice::Text)) QTextStream(&f) << "before emitEvent\n"; }
     emitEvent("itemQueued", {QVariantMap{{"id", id}, {"title", id}}});
-    { QFile f("/tmp/keeper_debug.log"); if(f.open(QIODevice::Append|QIODevice::Text)) QTextStream(&f) << "after emitEvent\n"; }
     qDebug() << "KeeperPlugin: queued" << id;
 
     if (!busy_) advanceQueue();
@@ -115,7 +119,6 @@ QString KeeperPlugin::cancelItem(const QString& identifier)
 
 QString KeeperPlugin::getQueue()
 {
-    { QFile f("/tmp/keeper_debug.log"); if(f.open(QIODevice::Append|QIODevice::Text)) QTextStream(&f) << "getQueue called\n"; }
     return itemsToJson(queue_);
 }
 
@@ -168,9 +171,6 @@ void KeeperPlugin::fetchMetadata(const QString& identifier)
     auto* reply = nam_->get(req);
 
     connect(reply, &QNetworkReply::finished, this, [this, reply, identifier] {
-        auto dbg = [](const char* msg){ QFile f("/tmp/keeper_debug.log"); if(f.open(QIODevice::Append|QIODevice::Text)) QTextStream(&f) << msg << "\n"; };
-        dbg("fetchMetadata lambda start");
-
         KeeperItem* item = nullptr;
         for (auto& i : queue_)
             if (i.identifier == identifier) { item = &i; break; }
@@ -183,7 +183,6 @@ void KeeperPlugin::fetchMetadata(const QString& identifier)
         }
 
         if (reply->error() != QNetworkReply::NoError) {
-            dbg("fetchMetadata network error");
             item->status = "failed";
             emitEvent("itemFailed", {QVariantMap{{"id", identifier}, {"error", reply->errorString()}}});
             reply->deleteLater();
@@ -193,7 +192,6 @@ void KeeperPlugin::fetchMetadata(const QString& identifier)
             return;
         }
 
-        dbg("fetchMetadata parsing response");
         QByteArray rawMeta = reply->readAll();
         // Save raw IA metadata for collection manifest upload
         { QFile mf(QDir::tempPath() + "/keeper-" + identifier + "-metadata.json");
@@ -222,10 +220,6 @@ void KeeperPlugin::fetchMetadata(const QString& identifier)
             count++;
         }
 
-        for (const auto& kf : item->files)
-            dbg(QString("  file: [%1]").arg(kf.name).toUtf8().constData());
-        dbg(QString("fetchMetadata found %1 files").arg(item->files.size()).toUtf8().constData());
-
         if (item->files.isEmpty()) {
             item->status = "failed";
             emitEvent("itemFailed", {QVariantMap{{"id", identifier}, {"error", "no original files found"}}});
@@ -235,22 +229,17 @@ void KeeperPlugin::fetchMetadata(const QString& identifier)
             return;
         }
 
-        dbg("fetchMetadata emitting itemQueued");
         emitEvent("itemQueued", {QVariantMap{
             {"id", identifier}, {"title", item->title}, {"fileCount", item->files.size()}
         }});
-        dbg("fetchMetadata after emitEvent, calling saveQueue");
         saveQueue();
         item->currentFile = 0;
-        dbg("fetchMetadata calling processNextFile");
         processNextFile();
-        dbg("fetchMetadata done");
     });
 }
 
 void KeeperPlugin::processNextFile()
 {
-    { QFile f("/tmp/keeper_debug.log"); if(f.open(QIODevice::Append|QIODevice::Text)) QTextStream(&f) << "processNextFile start\n"; }
     KeeperItem* item = nullptr;
     for (auto& i : queue_)
         if (i.status == "active") { item = &i; break; }
@@ -298,32 +287,25 @@ void KeeperPlugin::downloadFile(const QString& identifier, const KeeperFile& fil
     f->open(QIODevice::WriteOnly);
 
     connect(reply, &QNetworkReply::readyRead, this, [reply, f]{
-        { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text)) QTextStream(&dbg) << "readyRead fired\n"; }
         f->write(reply->readAll());
-        { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text)) QTextStream(&dbg) << "readyRead done\n"; }
     });
 
     QString fileName = file.name;
     connect(reply, &QNetworkReply::downloadProgress, this,
         [this, identifier, fileName](qint64 recv, qint64 total) {
-            { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text)) QTextStream(&dbg) << "downloadProgress fired recv=" << recv << " total=" << total << "\n"; }
             int pct = total > 0 ? int(recv * 100 / total) : 0;
             emitEvent("itemProgress", {QVariantMap{
                 {"id", identifier}, {"file", fileName}, {"phase", "download"}, {"pct", pct}
             }});
-            { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text)) QTextStream(&dbg) << "downloadProgress done\n"; }
         });
+
     connect(reply, &QNetworkReply::finished, this, [this, reply, f, tmpPath, identifier, fileName] {
-        { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text)) QTextStream(&dbg) << "download finished callback, error=" << reply->error() << "\n"; }
         f->close();
-        { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text)) QTextStream(&dbg) << "after f->close()\n"; }
         reply->deleteLater();
-        { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text)) QTextStream(&dbg) << "after reply->deleteLater()\n"; }
 
         KeeperItem* item = nullptr;
         for (auto& i : queue_)
             if (i.identifier == identifier) { item = &i; break; }
-        { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text)) QTextStream(&dbg) << "item=" << (item ? item->identifier : "null") << "\n"; }
 
         if (!item || item->status == "cancelled") {
             QFile::remove(tmpPath);
@@ -336,7 +318,6 @@ void KeeperPlugin::downloadFile(const QString& identifier, const KeeperFile& fil
         KeeperFile* kf = nullptr;
         for (auto& ff : item->files)
             if (ff.name == fileName) { kf = &ff; break; }
-        { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text)) QTextStream(&dbg) << "kf=" << (kf ? kf->name : "null") << "\n"; }
 
         if (reply->error() != QNetworkReply::NoError) {
             if (kf) { kf->status = "failed"; kf->error = reply->errorString(); }
@@ -348,18 +329,12 @@ void KeeperPlugin::downloadFile(const QString& identifier, const KeeperFile& fil
             return;
         }
 
-        { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text)) QTextStream(&dbg) << "before delete f\n"; }
         delete f;
-        { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text)) QTextStream(&dbg) << "after delete f, kf=" << (kf ? kf->name : "null") << "\n"; }
         if (kf) kf->status = "uploading";
-        { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text)) QTextStream(&dbg) << "before emitEvent itemProgress\n"; }
         emitEvent("itemProgress", {QVariantMap{
             {"id", identifier}, {"file", fileName}, {"phase", "upload"}, {"pct", 0}
         }});
-        { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text)) QTextStream(&dbg) << "after emitEvent, scheduling uploadToStash\n"; }
         // Defer uploadToStash so this callback returns to the event loop first.
-        // emitEvent above runs the event loop via Qt Remote Objects; calling
-        // logosAPI->getClient() while inside that nested loop causes bad_alloc.
         QString id2   = identifier;
         QString path2 = tmpPath;
         QString name2 = fileName;
@@ -376,34 +351,24 @@ void KeeperPlugin::uploadToStash(const QString& identifier, const QString& local
     // Deleting the file before stash's deferred upload runs causes "file does not exist".
     // Files in /tmp are cleaned up by the OS; we also clean them in finishItem.
 
-    { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text)) QTextStream(&dbg) << "uploadToStash enter id=" << identifier << " file=" << fileName << "\n"; }
-
+    // stashClient_ is pre-initialised in initLogos; this guard is a safety net only.
     if (!stashClient_ && logosAPI)
         stashClient_ = logosAPI->getClient("stash");
-
-    { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text)) QTextStream(&dbg) << "uploadToStash after getClient, stashClient_=" << (stashClient_ ? "ok" : "null") << "\n"; }
 
     KeeperItem* item = nullptr;
     for (auto& i : queue_)
         if (i.identifier == identifier) { item = &i; break; }
     if (!item) return;
 
-    { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text)) QTextStream(&dbg) << "uploadToStash found item, files=" << item->files.size() << "\n"; }
-
     KeeperFile* kf = nullptr;
     for (auto& ff : item->files)
         if (ff.name == fileName) { kf = &ff; break; }
 
-    { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text)) QTextStream(&dbg) << "uploadToStash found kf=" << (kf ? kf->name : "null") << "\n"; }
-
     if (stashClient_) {
-        { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text))
-            QTextStream(&dbg) << "uploadToStash: path=[" << localPath << "] exists="
-                              << QFile::exists(localPath) << " size=" << QFileInfo(localPath).size() << "\n"; }
         stashClient_->invokeRemoteMethod("stash", "upload", localPath, "keeper");
         // Returns {"queued":true} — actual upload is async; we do NOT wait for CID here.
         // Collection CID is obtained via uploadCollectionManifest after all files are done.
-        if (kf) kf->status = "uploaded";
+        if (kf) kf->status = "done";
     } else {
         if (kf) { kf->status = "failed"; kf->error = "no stash client"; }
     }
@@ -417,10 +382,8 @@ void KeeperPlugin::uploadCollectionManifest(const QString& identifier)
     // Upload the raw IA metadata JSON saved during fetchMetadata.
     // This single file represents the whole collection; its CID is inscribed to beacon.
     QString manifestPath = QDir::tempPath() + "/keeper-" + identifier + "-metadata.json";
-    { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text))
-        QTextStream(&dbg) << "uploadCollectionManifest: path=[" << manifestPath
-                          << "] exists=" << QFile::exists(manifestPath) << "\n"; }
 
+    // stashClient_ is pre-initialised in initLogos; this guard is a safety net only.
     if (!stashClient_ && logosAPI)
         stashClient_ = logosAPI->getClient("stash");
 
@@ -447,11 +410,6 @@ void KeeperPlugin::pollForManifestCid(const QString& identifier, const QString& 
         QString latestFile = QFileInfo(latest.value("file").toString()).fileName();
         QString latestCid  = latest.value("cid").toString();
 
-        { QFile dbg("/tmp/keeper_debug.log"); if(dbg.open(QIODevice::Append|QIODevice::Text))
-            QTextStream(&dbg) << "pollForManifestCid: attempts=" << attempts
-                              << " latestFile=[" << latestFile << "] wantFile=[" << manifestFile
-                              << "] cid=[" << latestCid << "]\n"; }
-
         if (latestFile == manifestFile && !latestCid.isEmpty()) {
             inscribeToBeacon(identifier, latestCid);
             return;
@@ -472,6 +430,7 @@ void KeeperPlugin::inscribeToBeacon(const QString& identifier, const QString& ci
 {
     QString label = QString("ia:%1").arg(identifier);
 
+    // beaconClient_ is pre-initialised in initLogos; this guard is a safety net only.
     if (!beaconClient_ && logosAPI)
         beaconClient_ = logosAPI->getClient("logos_beacon");
     if (beaconClient_) {
@@ -560,6 +519,15 @@ QString KeeperPlugin::persistPath(const QString& filename)
 
 void KeeperPlugin::loadQueue()
 {
+    // Load completed log
+    QFile lf(persistPath("keeper-log.json"));
+    if (lf.open(QIODevice::ReadOnly)) {
+        QJsonDocument ldoc = QJsonDocument::fromJson(lf.readAll());
+        if (ldoc.isArray())
+            for (const auto& v : ldoc.array())
+                log_.append(v.toObject());
+    }
+
     QFile f(persistPath("queue.json"));
     if (!f.open(QIODevice::ReadOnly)) return;
     QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
@@ -620,17 +588,25 @@ void KeeperPlugin::saveQueue()
 void KeeperPlugin::appendLog(const KeeperItem& item)
 {
     QJsonObject obj;
-    obj["id"]     = item.identifier;
-    obj["title"]  = item.title;
+    obj["id"]    = item.identifier;
+    obj["title"] = item.title;
+    obj["ts"]    = QDateTime::currentMSecsSinceEpoch();
+    if (!item.collectionCid.isEmpty())
+        obj["collectionCid"] = item.collectionCid;
+
+    qint64 totalBytes = 0;
     QJsonArray files;
     for (const auto& f : item.files) {
-        if (f.status == "done")
+        if (f.status == "done") {
             files.append(QJsonObject{{"name", f.name}, {"cid", f.cid}});
+            totalBytes += f.size.toLongLong();
+        }
     }
-    obj["files"] = files;
-    obj["ts"]    = QDateTime::currentMSecsSinceEpoch();
-    log_.prepend(obj);
-    while (log_.size() > 200) log_.removeLast();
+    obj["files"]     = files;
+    obj["totalSize"] = totalBytes;
+
+    log_.append(obj);
+    while (log_.size() > 200) log_.removeFirst();
 
     QJsonArray arr;
     for (const auto& o : log_) arr.append(o);

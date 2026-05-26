@@ -1,10 +1,12 @@
 #include "keeper_http_bridge.h"
 #include "keeper_plugin.h"
 
+#include <QHttpHeaders>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QDebug>
+#include <QHostAddress>
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
@@ -42,12 +44,14 @@ bool KeeperHttpBridge::listen(quint16 port)
             return corsPreflight();
         });
 
-    quint16 bound = server_.listen(QHostAddress::LocalHost, port);
-    if (!bound) {
+    auto* tcp = new QTcpServer(this);
+    if (!tcp->listen(QHostAddress::LocalHost, port)) {
         qWarning() << "KeeperHttpBridge: failed to listen on port" << port;
+        delete tcp;
         return false;
     }
-    qDebug() << "KeeperHttpBridge: listening on http://127.0.0.1:" << bound;
+    server_.bind(tcp);
+    qDebug() << "KeeperHttpBridge: listening on http://127.0.0.1:" << tcp->serverPort();
     return true;
 }
 
@@ -98,23 +102,15 @@ QHttpServerResponse KeeperHttpBridge::handleStatus(const QString& identifier)
             QJsonObject out;
             out["status"] = QStringLiteral("done");
             out["cid"]    = item.value("collectionCid");
-            // Propagate beacon inscription metadata when present
-            if (item.contains("inscription_status"))
-                out["inscription_status"] = item.value("inscription_status");
-            if (item.contains("inscription_id"))
-                out["inscription_id"] = item.value("inscription_id");
             auto resp = jsonOk(QJsonDocument(out).toJson(QJsonDocument::Compact));
             addCors(resp);
             return resp;
         }
     }
 
-    // 3. Unknown
-    QJsonObject out;
-    out["status"] = QStringLiteral("unknown");
-    auto resp = jsonOk(QJsonDocument(out).toJson(QJsonDocument::Compact));
-    addCors(resp);
-    return resp;
+    // 3. Unknown — 404
+    return jsonErr(R"({"success":false,"error":"not found"})",
+                   QHttpServerResponse::StatusCode::NotFound);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -143,7 +139,9 @@ QHttpServerResponse KeeperHttpBridge::corsPreflight()
 
 void KeeperHttpBridge::addCors(QHttpServerResponse& resp)
 {
-    resp.addHeader("Access-Control-Allow-Origin",  "*");
-    resp.addHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    resp.addHeader("Access-Control-Allow-Headers", "Content-Type");
+    QHttpHeaders hdrs = resp.headers();
+    hdrs.append("Access-Control-Allow-Origin",  "*");
+    hdrs.append("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    hdrs.append("Access-Control-Allow-Headers", "Content-Type");
+    resp.setHeaders(hdrs);
 }

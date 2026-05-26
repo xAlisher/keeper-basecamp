@@ -4,6 +4,7 @@
 #include <QHttpServerRequest>
 #include <QHttpServerResponse>
 #include <QObject>
+#include <QTcpServer>
 
 class KeeperPlugin;
 

@@ -33,6 +33,23 @@ Item {
         } catch(e) { return null }
     }
 
+    function fmtTime(ms) {
+        return Qt.formatTime(new Date(ms), "hh:mm:ss")
+    }
+
+    function fmtSize(bytes) {
+        if (!bytes || bytes <= 0)    return ""
+        if (bytes >= 1073741824)     return (bytes / 1073741824).toFixed(1) + "G"
+        if (bytes >= 1048576)        return (bytes / 1048576).toFixed(1) + "M"
+        if (bytes >= 1024)           return (bytes / 1024).toFixed(1) + "K"
+        return bytes + "B"
+    }
+
+    function fmtCid(cid) {
+        if (!cid || cid.length <= 16) return cid || ""
+        return cid.slice(0, 8) + "…" + cid.slice(-4)
+    }
+
     function statusIcon(status) {
         if (status === "done")      return "✓"
         if (status === "failed")    return "✗"
@@ -82,15 +99,24 @@ Item {
             }
         }
 
-        // Log (append-only)
+        // Log (append-only — C++ appends newest last)
         var lRaw = callModuleParse(logos.callModule("keeper", "getLog", []))
         if (Array.isArray(lRaw) && lRaw.length > root.logSeenCount) {
             for (var k = root.logSeenCount; k < lRaw.length; k++) {
                 var entry = lRaw[k]
-                if (logModel.count >= 200) logModel.remove(0)
+                var cidList = []
+                if (Array.isArray(entry.files)) {
+                    for (var fi = 0; fi < entry.files.length; fi++) {
+                        var c = entry.files[fi].cid
+                        if (c) cidList.push(fmtCid(c))
+                    }
+                }
                 logModel.append({
-                    cid:   entry.cid   || "",
-                    label: entry.label || entry.file || ""
+                    entryTs:    entry.ts           || 0,
+                    entryTitle: entry.title        || entry.id || "",
+                    entryCids:  cidList.join(", "),
+                    entrySize:  fmtSize(entry.totalSize || 0),
+                    entryCollectionCid: entry.collectionCid || ""
                 })
             }
             root.logSeenCount = lRaw.length
@@ -330,7 +356,7 @@ Item {
             spacing: 6
 
             Text {
-                text: "Inscription log"
+                text: "Log"
                 font.pixelSize: 13
                 font.bold: true
                 color: root.textPrimary
@@ -348,41 +374,65 @@ Item {
                 Text {
                     anchors.centerIn: parent
                     visible: logModel.count === 0
-                    text: "No inscriptions yet"
+                    text: "No entries yet"
                     color: root.textMuted
                     font.pixelSize: 11
-                    font.family: "Courier New, monospace"
                 }
 
                 ListView {
                     id: logView
                     anchors { fill: parent; margins: 10 }
                     clip: true
-                    spacing: 2
+                    spacing: 6
                     onCountChanged: Qt.callLater(() => logView.positionViewAtEnd())
                     model: ListModel { id: logModel }
 
-                    delegate: RowLayout {
-                        required property string cid
-                        required property string label
+                    delegate: Column {
+                        required property int    entryTs
+                        required property string entryTitle
+                        required property string entryCids
+                        required property string entrySize
+                        required property string entryCollectionCid
 
                         width: logView.width
-                        spacing: 8
+                        spacing: 1
 
+                        // Stash line
                         Text {
-                            text: cid.length > 12 ? cid.slice(0, 8) + "…" + cid.slice(-4) : cid
+                            width: parent.width
+                            text: {
+                                var t = "[" + fmtTime(entryTs) + "] Stash → Logos Storage: " + entryTitle
+                                if (entrySize)  t += " (" + entrySize + ")"
+                                if (entryCids)  t += ", CIDs: " + entryCids
+                                return t
+                            }
                             font.pixelSize: 11
-                            font.family: "Courier New, monospace"
-                            color: root.successGreen
+                            font.family: "monospace"
+                            color: root.textSecondary
+                            wrapMode: Text.Wrap
                         }
 
-                        Text {
-                            text: label
-                            font.pixelSize: 11
-                            font.family: "Courier New, monospace"
-                            color: root.textSecondary
-                            elide: Text.ElideRight
-                            Layout.fillWidth: true
+                        // Beacon line
+                        Row {
+                            width: parent.width
+                            spacing: 0
+
+                            Text {
+                                text: "[" + fmtTime(entryTs) + "] Beacon → Logos Blockchain: "
+                                font.pixelSize: 11
+                                font.family: "monospace"
+                                color: root.textSecondary
+                            }
+
+                            TextEdit {
+                                text: entryCollectionCid
+                                font.pixelSize: 11
+                                font.family: "monospace"
+                                color: root.successGreen
+                                readOnly: true
+                                selectByMouse: true
+                                width: parent.width - implicitWidth
+                            }
                         }
                     }
                 }
