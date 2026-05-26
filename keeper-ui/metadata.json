@@ -5,6 +5,7 @@
   "category": "storage",
   "description": "Preserve Internet Archive collections to Logos Storage — UI",
   "view": "qml/Main.qml",
+  "icon": "keeper.png",
 
   "dependencies": ["keeper"],
 
