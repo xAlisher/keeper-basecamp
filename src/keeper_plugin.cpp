@@ -20,6 +20,16 @@ KeeperPlugin::KeeperPlugin()
 void KeeperPlugin::initLogos(LogosAPI* api)
 {
     logosAPI = api;
+
+    // Persistence path injected by platform (same pattern as beacon).
+    QVariant prop = property("instancePersistencePath");
+    if (prop.isValid() && !prop.toString().isEmpty())
+        m_persistencePath = prop.toString();
+    else
+        m_persistencePath = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+                            + "/keeper";
+    QDir().mkpath(m_persistencePath);
+
     loadQueue();
 
     // Start HTTP bridge for the Chrome extension (localhost:7355)
@@ -406,8 +416,8 @@ void KeeperPlugin::uploadToStash(const QString& identifier, const QString& local
         QString id2   = identifier;
         QString name2 = fileName;
         QString path2 = localPath;
-        QTimer::singleShot(1000, this, [this, id2, name2, path2]() {
-            pollForFileCid(id2, name2, path2, 60);
+        QTimer::singleShot(2000, this, [this, id2, name2, path2]() {
+            pollForFileCid(id2, name2, path2, 300);
         });
     } else {
         if (kf) { kf->status = "failed"; kf->error = "no stash client"; }
@@ -465,7 +475,7 @@ void KeeperPlugin::pollForFileCid(const QString& identifier, const QString& file
         return;
     }
 
-    QTimer::singleShot(1000, this, [this, identifier, fileName, tmpPath, attempts]() {
+    QTimer::singleShot(2000, this, [this, identifier, fileName, tmpPath, attempts]() {
         pollForFileCid(identifier, fileName, tmpPath, attempts - 1);
     });
 }
@@ -622,10 +632,7 @@ QString KeeperPlugin::itemsToJson(const QList<KeeperItem>& items)
 
 QString KeeperPlugin::persistPath(const QString& filename)
 {
-    QString base = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
-                   + "/keeper";
-    QDir().mkpath(base);
-    return base + "/" + filename;
+    return m_persistencePath + "/" + filename;
 }
 
 void KeeperPlugin::saveInscriptionQueue()

@@ -140,6 +140,14 @@ Item {
 
     Component.onCompleted: root.refresh()
 
+    // Clipboard helper — zero-opacity TextEdit used to copy text to clipboard
+    // Must NOT be visible:false — invisible items can't receive focus needed for copy()
+    TextEdit {
+        id: clipboard
+        opacity: 0
+        width: 1; height: 1
+    }
+
     // ── Background ────────────────────────────────────────────────────────
 
     Rectangle {
@@ -430,7 +438,7 @@ Item {
                         spacing: 1
 
                         // Stash line
-                        Text {
+                        TextEdit {
                             width: parent.width
                             text: {
                                 var t = "[" + fmtTime(entryTs) + "] Stash → Logos Storage: " + entryTitle
@@ -441,31 +449,61 @@ Item {
                             font.pixelSize: 11
                             font.family: "monospace"
                             color: root.textSecondary
-                            wrapMode: Text.Wrap
+                            wrapMode: TextEdit.Wrap
+                            readOnly: true
+                            selectByMouse: true
                         }
 
                         // Beacon line
-                        TextEdit {
+                        RowLayout {
                             width: parent.width
-                            wrapMode: TextEdit.WrapAnywhere
-                            readOnly: true
-                            selectByMouse: true
-                            font.pixelSize: 11
-                            font.family: "monospace"
-                            textFormat: TextEdit.RichText
-                            text: {
-                                var prefix = "[" + fmtTime(entryTs) + "] Beacon → Logos Blockchain: "
-                                var url = entryExplorerUrl
-                                var muted = root.textMuted
-                                var secondary = root.textSecondary
-                                var green = root.successGreen
-                                if (url)
-                                    return "<span style='color:" + secondary + "'>" + prefix + "</span>"
-                                         + "<span style='color:" + green + "'>" + url + "</span>"
-                                if (entryCollectionCid)
-                                    return "<span style='color:" + secondary + "'>" + prefix + "</span>"
-                                         + "<span style='color:" + muted + "'>confirming\u2026</span>"
-                                return ""
+                            spacing: 6
+                            visible: entryExplorerUrl !== "" || entryCollectionCid !== ""
+
+                            TextEdit {
+                                Layout.fillWidth: true
+                                wrapMode: TextEdit.WrapAnywhere
+                                readOnly: true
+                                selectByMouse: true
+                                font.pixelSize: 11
+                                font.family: "monospace"
+                                textFormat: TextEdit.RichText
+                                text: {
+                                    var prefix = "[" + fmtTime(entryTs) + "] Beacon → Logos Blockchain: "
+                                    var url = entryExplorerUrl
+                                    var muted = root.textMuted
+                                    var secondary = root.textSecondary
+                                    var green = root.successGreen
+                                    if (url)
+                                        return "<span style='color:" + secondary + "'>" + prefix + "</span>"
+                                             + "<span style='color:" + green + "'>" + url + "</span>"
+                                    if (entryCollectionCid)
+                                        return "<span style='color:" + secondary + "'>" + prefix + "</span>"
+                                             + "<span style='color:" + muted + "'>confirming\u2026</span>"
+                                    return ""
+                                }
+                            }
+
+                            Text {
+                                id: copyBtn
+                                visible: entryExplorerUrl !== ""
+                                text: "copy"
+                                font.pixelSize: 10
+                                color: copyBtnArea.containsMouse ? root.textPrimary : root.textMuted
+                                Layout.alignment: Qt.AlignVCenter
+
+                                MouseArea {
+                                    id: copyBtnArea
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        clipboard.text = entryExplorerUrl
+                                        clipboard.forceActiveFocus()
+                                        clipboard.selectAll()
+                                        clipboard.copy()
+                                    }
+                                }
                             }
                         }
                     }

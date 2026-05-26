@@ -98,4 +98,6 @@ private:
     // Config
     int  maxFilesPerItem_    = 20;
     bool skipDerivatives_    = true;
+
+    QString m_persistencePath;
 };
