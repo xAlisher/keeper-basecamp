@@ -52,6 +52,8 @@ public:
     Q_INVOKABLE QString getConfig() override;
     Q_INVOKABLE QString setConfig(const QString& json) override;
     Q_INVOKABLE QString clearLog();
+    Q_INVOKABLE QString clearQueue();
+    Q_INVOKABLE QString getBridgeStatus() const;
     Q_INVOKABLE QString getInscriptionQueue() const;
     Q_INVOKABLE QString markInscribed(const QString& cid);
 
@@ -93,7 +95,9 @@ private:
 
     QNetworkAccessManager* nam_ = nullptr;
 
-    KeeperHttpBridge* httpBridge_ = nullptr;
+    KeeperHttpBridge* httpBridge_    = nullptr;
+    bool              bridgeRunning_ = false;
+    quint16           bridgePort_    = 7355;
 
     // Config
     int  maxFilesPerItem_    = 20;

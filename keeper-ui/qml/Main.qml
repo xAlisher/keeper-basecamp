@@ -18,7 +18,9 @@ Item {
     readonly property color borderColor:   "#383838"
 
     // ── State ─────────────────────────────────────────────────────────────
-    property bool   pollBusy: false
+    property bool   pollBusy:       false
+    property bool   bridgeRunning:  false
+    property int    bridgePort:     7355
 
     // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -72,6 +74,13 @@ Item {
         if (typeof logos === "undefined" || !logos.callModule) {
             root.pollBusy = false
             return
+        }
+
+        // Bridge status
+        var bRaw = callModuleParse(logos.callModule("keeper", "getBridgeStatus", []))
+        if (bRaw) {
+            root.bridgeRunning = bRaw.running === true
+            if (bRaw.port) root.bridgePort = bRaw.port
         }
 
         // Queue
@@ -184,6 +193,35 @@ Item {
                     Layout.fillWidth: true
                 }
             }
+
+            // Bridge status pill
+            Rectangle {
+                height: 28
+                implicitWidth: bridgePillRow.implicitWidth + 20
+                radius: 14
+                color: Qt.rgba(0.149, 0.149, 0.149, 0.85)
+                border.color: root.borderColor
+                border.width: 1
+                Layout.alignment: Qt.AlignVCenter
+
+                RowLayout {
+                    id: bridgePillRow
+                    anchors { left: parent.left; leftMargin: 10; verticalCenter: parent.verticalCenter }
+                    spacing: 6
+
+                    Rectangle {
+                        width: 7; height: 7; radius: 4
+                        Layout.alignment: Qt.AlignVCenter
+                        color: root.bridgeRunning ? root.successGreen : root.errorRed
+                    }
+
+                    Text {
+                        text: root.bridgeRunning ? ("Bridge :" + root.bridgePort) : "Bridge offline"
+                        font.pixelSize: 11
+                        color: root.textPrimary
+                    }
+                }
+            }
         }
 
         // ── Input row ─────────────────────────────────────────────────────
@@ -250,11 +288,37 @@ Item {
             Layout.fillWidth: true
             spacing: 6
 
-            Text {
-                text: "Queue"
-                font.pixelSize: 13
-                font.bold: true
-                color: root.textPrimary
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+
+                Text {
+                    text: "Queue"
+                    font.pixelSize: 13
+                    font.bold: true
+                    color: root.textPrimary
+                }
+
+                Item { Layout.fillWidth: true }
+
+                Text {
+                    text: "Clear"
+                    font.pixelSize: 11
+                    color: clearQueueArea.containsMouse ? root.textSecondary : root.textMuted
+                    visible: queueModel.count > 0
+
+                    MouseArea {
+                        id: clearQueueArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            if (typeof logos === "undefined" || !logos.callModule) return
+                            logos.callModule("keeper", "clearQueue", [])
+                            root.refresh()
+                        }
+                    }
+                }
             }
 
             Rectangle {

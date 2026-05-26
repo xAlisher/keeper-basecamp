@@ -34,7 +34,7 @@ void KeeperPlugin::initLogos(LogosAPI* api)
 
     // Start HTTP bridge for the Chrome extension (localhost:7355)
     httpBridge_ = new KeeperHttpBridge(this, this);
-    httpBridge_->listen(7355);
+    bridgeRunning_ = httpBridge_->listen(7355);
 
     // Defer client init + queue resume so the event loop is running.
     // Pre-initialising stashClient_ and beaconClient_ HERE (before any
@@ -158,6 +158,21 @@ QString KeeperPlugin::clearLog()
     log_.clear();
     QFile::remove(persistPath("keeper-log.json"));
     return R"({"ok":true})";
+}
+
+QString KeeperPlugin::clearQueue()
+{
+    queue_.clear();
+    QFile::remove(persistPath("keeper-queue.json"));
+    return R"({"ok":true})";
+}
+
+QString KeeperPlugin::getBridgeStatus() const
+{
+    QJsonObject o;
+    o[QStringLiteral("running")] = bridgeRunning_;
+    o[QStringLiteral("port")]    = bridgePort_;
+    return QJsonDocument(o).toJson(QJsonDocument::Compact);
 }
 
 QString KeeperPlugin::getInscriptionQueue() const
@@ -420,9 +435,14 @@ void KeeperPlugin::uploadToStash(const QString& identifier, const QString& local
             pollForFileCid(id2, name2, path2, 300);
         });
     } else {
-        if (kf) { kf->status = "failed"; kf->error = "no stash client"; }
-        item->currentFile++;
-        processNextFile();
+        // Stash not yet loaded — retry in 5 s rather than failing immediately.
+        qDebug() << "KeeperPlugin: stash not ready, retrying upload in 5s for" << fileName;
+        QString id2   = identifier;
+        QString path2 = localPath;
+        QString name2 = fileName;
+        QTimer::singleShot(5000, this, [this, id2, path2, name2]() {
+            uploadToStash(id2, path2, name2);
+        });
     }
 }
 
