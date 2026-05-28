@@ -9,6 +9,9 @@
 #include <QStandardPaths>
 #include <QNetworkRequest>
 #include <QUrl>
+#include <QDateTime>
+
+#include <sodium.h>
 
 
 // ── Lifecycle ────────────────────────────────────────────────────────────────
@@ -32,10 +35,6 @@ void KeeperPlugin::initLogos(LogosAPI* api)
 
     loadQueue();
 
-    // Start HTTP bridge for the Chrome extension (localhost:7355)
-    httpBridge_ = new KeeperHttpBridge(this, this);
-    bridgeRunning_ = httpBridge_->listen(7355);
-
     // Defer client init + queue resume so the event loop is running.
     // Pre-initialising stashClient_ and beaconClient_ HERE (before any
     // downloads start) avoids calling getClient() after download callbacks
@@ -44,6 +43,7 @@ void KeeperPlugin::initLogos(LogosAPI* api)
         if (logosAPI) {
             stashClient_  = logosAPI->getClient("stash");
             beaconClient_ = logosAPI->getClient("logos_beacon");
+            initDeliveryModule();
         }
         advanceQueue();
         // Resume tx hash polling for log entries that have a collection CID but no tx hash yet
@@ -85,6 +85,7 @@ QString KeeperPlugin::preserveItem(const QString& urlOrId)
     saveQueue();
 
     emitEvent("itemQueued", {QVariantMap{{"id", id}, {"title", id}}});
+    publishStatus(id, "queued");
     qDebug() << "KeeperPlugin: queued" << id;
 
     if (!busy_) advanceQueue();
@@ -167,11 +168,12 @@ QString KeeperPlugin::clearQueue()
     return R"({"ok":true})";
 }
 
-QString KeeperPlugin::getBridgeStatus() const
+QString KeeperPlugin::getLogosMsgStatus() const
 {
     QJsonObject o;
-    o[QStringLiteral("running")] = bridgeRunning_;
-    o[QStringLiteral("port")]    = bridgePort_;
+    o[QStringLiteral("status")]      = lmStatus_.isEmpty() ? QStringLiteral("offline") : lmStatus_;
+    o[QStringLiteral("ready")]       = lmReady_;
+    o[QStringLiteral("pairedCount")] = m_pairedPubkeys.size();
     return QJsonDocument(o).toJson(QJsonDocument::Compact);
 }
 
@@ -596,6 +598,7 @@ void KeeperPlugin::finishItem(const QString& identifier, const QString& collecti
             i.status       = collectionCid.isEmpty() ? "failed" : "done";
             i.collectionCid = collectionCid;
             appendLog(i);
+            publishStatus(identifier, i.status, collectionCid);
             break;
         }
     }
@@ -666,6 +669,15 @@ void KeeperPlugin::saveInscriptionQueue()
 
 void KeeperPlugin::loadQueue()
 {
+    // Load paired extension pubkeys
+    QFile pf(persistPath("keeper-paired-extensions.json"));
+    if (pf.open(QIODevice::ReadOnly)) {
+        QJsonDocument pdoc = QJsonDocument::fromJson(pf.readAll());
+        if (pdoc.isArray())
+            for (const auto& v : pdoc.array())
+                m_pairedPubkeys.append(v.toString());
+    }
+
     // Load inscription queue (survives crash/restart)
     QFile iqf(persistPath("keeper-inscription-queue.json"));
     if (iqf.open(QIODevice::ReadOnly)) {
@@ -767,6 +779,198 @@ void KeeperPlugin::appendLog(const KeeperItem& item)
     QJsonArray arr;
     for (const auto& o : log_) arr.append(o);
     QFile f(persistPath("keeper-log.json"));
+    if (f.open(QIODevice::WriteOnly))
+        f.write(QJsonDocument(arr).toJson(QJsonDocument::Compact));
+}
+
+// ── Logos Messaging (delivery_module) ────────────────────────────────────────
+
+void KeeperPlugin::initDeliveryModule()
+{
+    deliveryClient_ = logosAPI ? logosAPI->getClient("delivery_module") : nullptr;
+    if (!deliveryClient_) {
+        qWarning() << "KeeperPlugin: delivery_module not available — retrying in 5s";
+        QTimer::singleShot(5000, this, [this]{ initDeliveryModule(); });
+        return;
+    }
+
+    // Random nodeKey — avoids PeerID collisions across restarts
+    QString nodeKey;
+    { QFile rf("/dev/urandom");
+      if (rf.open(QIODevice::ReadOnly)) nodeKey = rf.read(32).toHex(); }
+    if (nodeKey.size() != 64) {
+        quint64 t = static_cast<quint64>(QDateTime::currentMSecsSinceEpoch());
+        nodeKey = QString("%1%2").arg(t, 16, 16, QChar('0')).arg(~t, 16, 16, QChar('0'));
+    }
+
+    QString cfg = QString(
+        R"({"logLevel":"INFO","mode":"Core","preset":"logos.dev","relay":true,"nodeKey":"%1"})"
+    ).arg(nodeKey);
+
+    deliveryClient_->invokeRemoteMethod("delivery_module", "createNode", cfg);
+
+    // Register event handlers
+    deliveryObject_ = deliveryClient_->requestObject("delivery_module");
+    if (deliveryObject_) {
+        deliveryClient_->onEvent(deliveryObject_, "messageReceived",
+            [this](const QString&, const QVariantList& data) {
+                onWakuMessageReceived(data);
+            });
+        deliveryClient_->onEvent(deliveryObject_, "connectionStateChanged",
+            [this](const QString&, const QVariantList& data) {
+                onWakuConnectionChanged(data);
+            });
+    }
+
+    deliveryClient_->invokeRemoteMethod("delivery_module", "start");
+    deliveryClient_->invokeRemoteMethod("delivery_module", "subscribe",
+        QStringLiteral("/keeper/1/preserve/json"));
+
+    qDebug() << "KeeperPlugin: Logos Messaging initialised — subscribed /keeper/1/preserve/json";
+}
+
+void KeeperPlugin::onWakuConnectionChanged(const QVariantList& data)
+{
+    QString state = data.size() > 0 ? data[0].toString() : QString();
+    if (!state.isEmpty()) {
+        lmStatus_ = state;
+        lmReady_  = (state == "CONNECTED");
+        qDebug() << "KeeperPlugin: Logos Messaging connection state:" << state;
+    }
+}
+
+void KeeperPlugin::onWakuMessageReceived(const QVariantList& data)
+{
+    // data[] layout (delivery-module-messaging skill):
+    //   [0] = message hash, [1] = content topic, [2] = base64(payload), [3] = timestamp ns
+    if (data.size() < 3) return;
+
+    // Single base64 decode (confirmed: delivery_module adds exactly one layer)
+    QByteArray payloadBytes = QByteArray::fromBase64(data[2].toString().toLatin1());
+    QJsonDocument doc = QJsonDocument::fromJson(payloadBytes);
+    if (!doc.isObject()) {
+        qDebug() << "KeeperPlugin: Logos Messaging — non-JSON payload, ignored";
+        return;
+    }
+    QJsonObject msg = doc.object();
+
+    QString action     = msg["action"].toString();
+    QString identifier = msg["identifier"].toString();
+    QString url        = msg["url"].toString();
+    QString pubkeyHex  = msg["pubkey"].toString();
+    QString sigB64     = msg["sig"].toString();
+
+    if (action != "preserve" || identifier.isEmpty() || url.isEmpty() ||
+        pubkeyHex.isEmpty() || sigB64.isEmpty()) {
+        qDebug() << "KeeperPlugin: Logos Messaging — missing or unsupported fields, ignored";
+        return;
+    }
+
+    // Whitelist check
+    if (!m_pairedPubkeys.contains(pubkeyHex)) {
+        qDebug() << "KeeperPlugin: Logos Messaging — unknown pubkey"
+                 << pubkeyHex.left(16) << "..., ignored";
+        return;
+    }
+
+    // Ed25519 signature verification
+    // Canonical JSON must match JS JSON.stringify key insertion order:
+    //   {action, identifier, url, timestamp, pubkey}
+    // Build as raw string — QJsonObject serialises alphabetically (incompatible with JS order).
+    auto jv = [](const QJsonValue& v) -> QByteArray {
+        // Serialize a single QJsonValue via a one-element array, then strip brackets.
+        return QJsonDocument(QJsonArray{v}).toJson(QJsonDocument::Compact).mid(1).chopped(1);
+    };
+    QByteArray canonical =
+        "{\"action\":"     + jv(msg["action"])     +
+        ",\"identifier\":" + jv(msg["identifier"]) +
+        ",\"url\":"        + jv(msg["url"])         +
+        ",\"timestamp\":"  + jv(msg["timestamp"])   +
+        ",\"pubkey\":"     + jv(msg["pubkey"])      + "}";
+
+    QByteArray pubkeyBytes = QByteArray::fromHex(pubkeyHex.toLatin1());
+    QByteArray sigBytes    = QByteArray::fromBase64(sigB64.toLatin1());
+
+    if (pubkeyBytes.size() != static_cast<int>(crypto_sign_PUBLICKEYBYTES) ||
+        sigBytes.size()    != static_cast<int>(crypto_sign_BYTES)) {
+        qDebug() << "KeeperPlugin: Logos Messaging — wrong pubkey/sig byte length, ignored";
+        return;
+    }
+
+    int rc = crypto_sign_verify_detached(
+        reinterpret_cast<const unsigned char*>(sigBytes.constData()),
+        reinterpret_cast<const unsigned char*>(canonical.constData()),
+        static_cast<unsigned long long>(canonical.size()),
+        reinterpret_cast<const unsigned char*>(pubkeyBytes.constData())
+    );
+
+    if (rc != 0) {
+        qDebug() << "KeeperPlugin: Logos Messaging — signature verification FAILED for"
+                 << identifier;
+        return;
+    }
+
+    qDebug() << "KeeperPlugin: Logos Messaging — verified preserve request for" << identifier;
+    preserveItem(url);
+}
+
+void KeeperPlugin::publishStatus(const QString& identifier, const QString& status,
+                                  const QString& cid, double progress, const QString& error)
+{
+    if (!deliveryClient_ || !lmReady_) return;
+
+    QJsonObject obj;
+    obj["identifier"] = identifier;
+    obj["status"]     = status;
+    if (!cid.isEmpty())   obj["cid"]      = cid;
+    if (progress >= 0.0)  obj["progress"] = progress;
+    if (!error.isEmpty()) obj["error"]    = error;
+
+    QString payload = QJsonDocument(obj).toJson(QJsonDocument::Compact);
+    deliveryClient_->invokeRemoteMethod("delivery_module", "send",
+        QStringLiteral("/keeper/1/status/json"), payload);
+}
+
+// ── Paired extension management ──────────────────────────────────────────────
+
+QString KeeperPlugin::addPairedExtension(const QString& hexPubkey)
+{
+    // Must be 64 hex chars = 32 bytes (Ed25519 public key)
+    if (hexPubkey.size() != 64) {
+        return R"({"success":false,"error":"pubkey must be 64 hex chars (32 bytes)"})";
+    }
+    QByteArray check = QByteArray::fromHex(hexPubkey.toLatin1());
+    if (check.size() != static_cast<int>(crypto_sign_PUBLICKEYBYTES)) {
+        return R"({"success":false,"error":"invalid hex pubkey"})";
+    }
+    if (m_pairedPubkeys.contains(hexPubkey)) {
+        return R"({"success":true,"note":"already paired"})";
+    }
+    m_pairedPubkeys.append(hexPubkey);
+    savePairedExtensions();
+    qDebug() << "KeeperPlugin: paired extension" << hexPubkey.left(16) << "...";
+    return R"({"success":true})";
+}
+
+QString KeeperPlugin::removePairedExtension(const QString& hexPubkey)
+{
+    bool removed = m_pairedPubkeys.removeOne(hexPubkey);
+    if (removed) savePairedExtensions();
+    return removed ? R"({"success":true})" : R"({"success":false,"error":"not found"})";
+}
+
+QString KeeperPlugin::getPairedExtensions()
+{
+    QJsonArray arr;
+    for (const auto& pk : m_pairedPubkeys) arr.append(pk);
+    return QJsonDocument(arr).toJson(QJsonDocument::Compact);
+}
+
+void KeeperPlugin::savePairedExtensions()
+{
+    QJsonArray arr;
+    for (const auto& pk : m_pairedPubkeys) arr.append(pk);
+    QFile f(persistPath("keeper-paired-extensions.json"));
     if (f.open(QIODevice::WriteOnly))
         f.write(QJsonDocument(arr).toJson(QJsonDocument::Compact));
 }

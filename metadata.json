@@ -9,12 +9,12 @@
 
   "nix": {
     "packages": {
-      "build": [],
-      "runtime": ["qt6.qthttpserver"]
+      "build": ["pkg-config"],
+      "runtime": ["libsodium"]
     },
     "external_libraries": [],
     "cmake": {
-      "find_packages": ["Qt6 COMPONENTS Core Qml Network HttpServer"],
+      "find_packages": ["Qt6 COMPONENTS Core Qml Network"],
       "extra_sources": [
         "src/keeper_plugin.cpp"
       ],
@@ -22,8 +22,7 @@
         "src"
       ],
       "extra_link_libraries": [
-        "Qt6::Network",
-        "Qt6::HttpServer"
+        "Qt6::Network"
       ]
     }
   }

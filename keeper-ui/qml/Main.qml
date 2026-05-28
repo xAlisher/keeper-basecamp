@@ -18,9 +18,10 @@ Item {
     readonly property color borderColor:   "#383838"
 
     // ── State ─────────────────────────────────────────────────────────────
-    property bool   pollBusy:       false
-    property bool   bridgeRunning:  false
-    property int    bridgePort:     7355
+    property bool   pollBusy:        false
+    property string lmStatus:        "offline"
+    property bool   lmReady:         false
+    property int    lmPairedCount:   0
 
     // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -76,11 +77,20 @@ Item {
             return
         }
 
-        // Bridge status
-        var bRaw = callModuleParse(logos.callModule("keeper", "getBridgeStatus", []))
-        if (bRaw) {
-            root.bridgeRunning = bRaw.running === true
-            if (bRaw.port) root.bridgePort = bRaw.port
+        // Logos Messaging status
+        var wRaw = callModuleParse(logos.callModule("keeper", "getLogosMsgStatus", []))
+        if (wRaw) {
+            root.lmStatus      = wRaw.status      || "offline"
+            root.lmReady       = wRaw.ready       === true
+            root.lmPairedCount = wRaw.pairedCount || 0
+        }
+
+        // Paired extensions
+        var pRaw = callModuleParse(logos.callModule("keeper", "getPairedExtensions", []))
+        if (Array.isArray(pRaw)) {
+            pairedModel.clear()
+            for (var pi = 0; pi < pRaw.length; pi++)
+                pairedModel.append({ pubkey: pRaw[pi] })
         }
 
         // Queue
@@ -194,10 +204,10 @@ Item {
                 }
             }
 
-            // Bridge status pill
+            // Logos Messaging status pill
             Rectangle {
                 height: 28
-                implicitWidth: bridgePillRow.implicitWidth + 20
+                implicitWidth: lmPillRow.implicitWidth + 20
                 radius: 14
                 color: Qt.rgba(0.149, 0.149, 0.149, 0.85)
                 border.color: root.borderColor
@@ -205,18 +215,20 @@ Item {
                 Layout.alignment: Qt.AlignVCenter
 
                 RowLayout {
-                    id: bridgePillRow
+                    id: lmPillRow
                     anchors { left: parent.left; leftMargin: 10; verticalCenter: parent.verticalCenter }
                     spacing: 6
 
                     Rectangle {
                         width: 7; height: 7; radius: 4
                         Layout.alignment: Qt.AlignVCenter
-                        color: root.bridgeRunning ? root.successGreen : root.errorRed
+                        color: root.lmReady ? root.successGreen
+                             : (root.lmStatus === "CONNECTING" ? "#F59E0B" : root.errorRed)
                     }
 
                     Text {
-                        text: root.bridgeRunning ? ("Bridge :" + root.bridgePort) : "Bridge offline"
+                        text: root.lmReady ? "Logos Messaging"
+                            : ("Logos Messaging " + root.lmStatus.toLowerCase())
                         font.pixelSize: 11
                         color: root.textPrimary
                     }
@@ -416,6 +428,129 @@ Item {
                                 onClicked: {
                                     if (typeof logos === "undefined" || !logos.callModule) return
                                     logos.callModule("keeper", "cancelItem", [identifier])
+                                    root.refresh()
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Paired Extensions ─────────────────────────────────────────────
+        ColumnLayout {
+            Layout.fillWidth: true
+            spacing: 6
+
+            Text {
+                text: "Paired Extensions"
+                font.pixelSize: 13
+                font.bold: true
+                color: root.textPrimary
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    height: 32
+                    radius: 6
+                    color: root.bgSecondary
+                    border.color: pairField.activeFocus ? root.accentOrange : root.borderColor
+                    border.width: 1
+
+                    TextField {
+                        id: pairField
+                        anchors.fill: parent
+                        anchors.margins: 4
+                        background: null
+                        color: root.textPrimary
+                        font.pixelSize: 11
+                        placeholderText: "64-char hex pubkey from extension popup"
+                        placeholderTextColor: root.textMuted
+                        onAccepted: addPairBtn.doPair()
+                    }
+                }
+
+                Rectangle {
+                    id: addPairBtn
+                    width: 52; height: 32
+                    radius: 6
+                    color: addPairArea.containsMouse ? "#CC4000" : root.accentOrange
+
+                    function doPair() {
+                        var val = pairField.text.trim()
+                        if (!val) return
+                        if (typeof logos === "undefined" || !logos.callModule) return
+                        logos.callModule("keeper", "addPairedExtension", [val])
+                        pairField.text = ""
+                        root.refresh()
+                    }
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: "Pair"
+                        font.pixelSize: 12
+                        font.bold: true
+                        color: root.textPrimary
+                    }
+
+                    MouseArea {
+                        id: addPairArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: addPairBtn.doPair()
+                    }
+                }
+            }
+
+            // Paired list — only visible when non-empty
+            Rectangle {
+                visible: pairedModel.count > 0
+                Layout.fillWidth: true
+                implicitHeight: pairedList.contentHeight + 16
+                radius: 6
+                color: root.bgSecondary
+                border.color: root.borderColor
+                border.width: 1
+                clip: true
+
+                ListView {
+                    id: pairedList
+                    anchors { fill: parent; margins: 8 }
+                    clip: true
+                    spacing: 4
+                    model: ListModel { id: pairedModel }
+
+                    delegate: RowLayout {
+                        required property string pubkey
+                        width: pairedList.width
+                        spacing: 8
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: pubkey.slice(0, 8) + "\u2026" + pubkey.slice(-8)
+                            font.pixelSize: 11
+                            font.family: "monospace"
+                            color: root.textSecondary
+                        }
+
+                        Text {
+                            text: "remove"
+                            font.pixelSize: 10
+                            color: removeArea.containsMouse ? root.errorRed : root.textMuted
+
+                            MouseArea {
+                                id: removeArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    if (typeof logos === "undefined" || !logos.callModule) return
+                                    logos.callModule("keeper", "removePairedExtension", [pubkey])
                                     root.refresh()
                                 }
                             }
