@@ -170,7 +170,7 @@ QString KeeperPlugin::clearQueue()
     if (busy_)
         return R"({"success":false,"error":"cannot clear queue while an item is active"})";
     queue_.clear();
-    const QString path = persistPath("keeper-queue.json");
+    const QString path = persistPath("queue.json");
     if (QFile::exists(path) && !QFile::remove(path)) {
         qWarning() << "KeeperPlugin: failed to remove queue file:" << path;
         return R"({"success":false,"error":"queue file remove failed"})";
