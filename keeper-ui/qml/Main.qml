@@ -90,7 +90,7 @@ Item {
         if (Array.isArray(pRaw)) {
             pairedModel.clear()
             for (var pi = 0; pi < pRaw.length; pi++)
-                pairedModel.append({ pubkey: pRaw[pi] })
+                pairedModel.append({ fp: pRaw[pi].fp, idx: pRaw[pi].idx })
         }
 
         // Queue
@@ -484,7 +484,13 @@ Item {
                         var val = pairField.text.trim()
                         if (!val) return
                         if (typeof logos === "undefined" || !logos.callModule) return
-                        logos.callModule("keeper", "addPairedExtension", [val])
+                        var result = callModuleParse(logos.callModule("keeper", "addPairedExtension", [val]))
+                        if (!result || !result.success) {
+                            pairErrorLabel.text = (result && result.error) ? result.error : "Pair failed"
+                            pairErrorLabel.visible = true
+                            return
+                        }
+                        pairErrorLabel.visible = false
                         pairField.text = ""
                         root.refresh()
                     }
@@ -507,6 +513,16 @@ Item {
                 }
             }
 
+            Text {
+                id: pairErrorLabel
+                visible: false
+                Layout.fillWidth: true
+                text: ""
+                font.pixelSize: 11
+                color: root.errorRed
+                wrapMode: Text.WordWrap
+            }
+
             // Paired list — only visible when non-empty
             Rectangle {
                 visible: pairedModel.count > 0
@@ -526,13 +542,14 @@ Item {
                     model: ListModel { id: pairedModel }
 
                     delegate: RowLayout {
-                        required property string pubkey
+                        required property string fp
+                        required property int    idx
                         width: pairedList.width
                         spacing: 8
 
                         Text {
                             Layout.fillWidth: true
-                            text: pubkey.slice(0, 8) + "\u2026" + pubkey.slice(-8)
+                            text: fp
                             font.pixelSize: 11
                             font.family: "monospace"
                             color: root.textSecondary
@@ -550,8 +567,8 @@ Item {
                                 cursorShape: Qt.PointingHandCursor
                                 onClicked: {
                                     if (typeof logos === "undefined" || !logos.callModule) return
-                                    logos.callModule("keeper", "removePairedExtension", [pubkey])
-                                    root.refresh()
+                                    var result = callModuleParse(logos.callModule("keeper", "removePairedExtensionAt", [idx]))
+                                    if (result && result.success) root.refresh()
                                 }
                             }
                         }

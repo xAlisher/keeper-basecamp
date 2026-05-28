@@ -675,7 +675,7 @@ void KeeperPlugin::loadQueue()
         QJsonDocument pdoc = QJsonDocument::fromJson(pf.readAll());
         if (pdoc.isArray())
             for (const auto& v : pdoc.array())
-                m_pairedPubkeys.append(v.toString());
+                m_pairedPubkeys.append(v.toString().trimmed().toLower());
     }
 
     // Load inscription queue (survives crash/restart)
@@ -857,12 +857,20 @@ void KeeperPlugin::onWakuMessageReceived(const QVariantList& data)
     QString action     = msg["action"].toString();
     QString identifier = msg["identifier"].toString();
     QString url        = msg["url"].toString();
-    QString pubkeyHex  = msg["pubkey"].toString();
+    QString pubkeyHex  = msg["pubkey"].toString().toLower();  // normalise case
     QString sigB64     = msg["sig"].toString();
 
     if (action != "preserve" || identifier.isEmpty() || url.isEmpty() ||
         pubkeyHex.isEmpty() || sigB64.isEmpty()) {
         qDebug() << "KeeperPlugin: Logos Messaging — missing or unsupported fields, ignored";
+        return;
+    }
+
+    // Timestamp freshness check (±30 seconds)
+    qint64 ts  = msg["timestamp"].toVariant().toLongLong();
+    qint64 now = QDateTime::currentSecsSinceEpoch();
+    if (qAbs(now - ts) > 30) {
+        qDebug() << "KeeperPlugin: Logos Messaging — stale/future timestamp, ignored";
         return;
     }
 
@@ -910,6 +918,17 @@ void KeeperPlugin::onWakuMessageReceived(const QVariantList& data)
         return;
     }
 
+    // Replay dedup — reject already-seen signatures (bounded at 1000 entries)
+    if (m_seenSigs.contains(sigB64)) {
+        qDebug() << "KeeperPlugin: Logos Messaging — replay detected, ignored";
+        return;
+    }
+    constexpr int kMaxSeenSigs = 1000;
+    if (m_seenSigOrder.size() >= kMaxSeenSigs)
+        m_seenSigs.remove(m_seenSigOrder.takeFirst());
+    m_seenSigs.insert(sigB64);
+    m_seenSigOrder.append(sigB64);
+
     qDebug() << "KeeperPlugin: Logos Messaging — verified preserve request for" << identifier;
     preserveItem(url);
 }
@@ -935,35 +954,53 @@ void KeeperPlugin::publishStatus(const QString& identifier, const QString& statu
 
 QString KeeperPlugin::addPairedExtension(const QString& hexPubkey)
 {
+    QString key = hexPubkey.trimmed().toLower();
     // Must be 64 hex chars = 32 bytes (Ed25519 public key)
-    if (hexPubkey.size() != 64) {
+    if (key.size() != 64) {
         return R"({"success":false,"error":"pubkey must be 64 hex chars (32 bytes)"})";
     }
-    QByteArray check = QByteArray::fromHex(hexPubkey.toLatin1());
+    QByteArray check = QByteArray::fromHex(key.toLatin1());
     if (check.size() != static_cast<int>(crypto_sign_PUBLICKEYBYTES)) {
         return R"({"success":false,"error":"invalid hex pubkey"})";
     }
-    if (m_pairedPubkeys.contains(hexPubkey)) {
+    if (m_pairedPubkeys.contains(key)) {
         return R"({"success":true,"note":"already paired"})";
     }
-    m_pairedPubkeys.append(hexPubkey);
+    m_pairedPubkeys.append(key);
     savePairedExtensions();
-    qDebug() << "KeeperPlugin: paired extension" << hexPubkey.left(16) << "...";
+    qDebug() << "KeeperPlugin: paired extension" << key.left(16) << "...";
     return R"({"success":true})";
 }
 
 QString KeeperPlugin::removePairedExtension(const QString& hexPubkey)
 {
-    bool removed = m_pairedPubkeys.removeOne(hexPubkey);
+    bool removed = m_pairedPubkeys.removeOne(hexPubkey.trimmed().toLower());
     if (removed) savePairedExtensions();
     return removed ? R"({"success":true})" : R"({"success":false,"error":"not found"})";
 }
 
 QString KeeperPlugin::getPairedExtensions()
 {
+    // Return redacted fingerprints only — full pubkeys stay internal
     QJsonArray arr;
-    for (const auto& pk : m_pairedPubkeys) arr.append(pk);
+    for (int i = 0; i < m_pairedPubkeys.size(); ++i) {
+        const QString& pk = m_pairedPubkeys.at(i);
+        QString fp = pk.left(8) + QStringLiteral("...") + pk.right(8);
+        QJsonObject obj;
+        obj[QStringLiteral("fp")]  = fp;
+        obj[QStringLiteral("idx")] = i;
+        arr.append(obj);
+    }
     return QJsonDocument(arr).toJson(QJsonDocument::Compact);
+}
+
+QString KeeperPlugin::removePairedExtensionAt(int idx)
+{
+    if (idx < 0 || idx >= m_pairedPubkeys.size())
+        return R"({"success":false,"error":"index out of range"})";
+    m_pairedPubkeys.removeAt(idx);
+    savePairedExtensions();
+    return R"({"success":true})";
 }
 
 void KeeperPlugin::savePairedExtensions()

@@ -6,6 +6,7 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QFile>
+#include <QSet>
 #include <QTimer>
 
 #include "keeper_interface.h"
@@ -60,6 +61,7 @@ public:
     // Logos Messaging pairing
     Q_INVOKABLE QString addPairedExtension(const QString& hexPubkey);
     Q_INVOKABLE QString removePairedExtension(const QString& hexPubkey);
+    Q_INVOKABLE QString removePairedExtensionAt(int idx);
     Q_INVOKABLE QString getPairedExtensions();
 
 signals:
@@ -112,9 +114,11 @@ private:
     QNetworkAccessManager* nam_ = nullptr;
 
     // Logos Messaging state
-    bool    lmReady_  = false;
-    QString lmStatus_;
+    bool        lmReady_  = false;
+    QString     lmStatus_;
     QStringList m_pairedPubkeys;
+    QSet<QString>   m_seenSigs;      // replay guard: seen signature values
+    QStringList     m_seenSigOrder;  // insertion-order for bounded eviction
 
     // Config
     int  maxFilesPerItem_ = 20;
