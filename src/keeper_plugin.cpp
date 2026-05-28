@@ -316,7 +316,13 @@ void KeeperPlugin::fetchMetadata(const QString& identifier)
         emitEvent("itemQueued", {QVariantMap{
             {"id", identifier}, {"title", item->title}, {"fileCount", item->files.size()}
         }});
-        if (!saveQueue()) qWarning() << "KeeperPlugin: saveQueue failed after metadata parse";
+        if (!saveQueue()) {
+            item->status = "failed";
+            emitEvent("itemFailed", {QVariantMap{{"id", identifier}, {"error", "saveQueue failed after metadata parse"}}});
+            busy_ = false;
+            advanceQueue();
+            return;
+        }
         item->currentFile = 0;
         processNextFile();
     });
@@ -342,7 +348,13 @@ void KeeperPlugin::processNextFile()
     if (item->currentFile >= item->files.size()) {
         // All files uploaded — inscribe directly with ia:{identifier} as the stable key
         item->status = "inscribing";
-        if (!saveQueue()) qWarning() << "KeeperPlugin: saveQueue failed on inscribing transition";
+        if (!saveQueue()) {
+            item->status = "failed";
+            emitEvent("itemFailed", {QVariantMap{{"id", identifier}, {"error", "saveQueue failed on inscribing transition"}}});
+            busy_ = false;
+            advanceQueue();
+            return;
+        }
         inscribeToBeacon(item->identifier, "ia:" + item->identifier);
         return;
     }
@@ -394,7 +406,7 @@ void KeeperPlugin::downloadFile(const QString& identifier, const KeeperFile& fil
             if (i.identifier == identifier) { item = &i; break; }
 
         if (!item || item->status == "cancelled") {
-            QFile::remove(tmpPath);
+            if (!QFile::remove(tmpPath)) qWarning() << "KeeperPlugin: failed to remove tmp file:" << tmpPath;
             delete f;
             busy_ = false;
             advanceQueue();
@@ -407,7 +419,7 @@ void KeeperPlugin::downloadFile(const QString& identifier, const KeeperFile& fil
 
         if (reply->error() != QNetworkReply::NoError) {
             if (kf) { kf->status = "failed"; kf->error = reply->errorString(); }
-            QFile::remove(tmpPath);
+            if (!QFile::remove(tmpPath)) qWarning() << "KeeperPlugin: failed to remove tmp file on error:" << tmpPath;
             delete f;
             // Skip to next file rather than failing the whole item
             item->currentFile++;
@@ -496,10 +508,19 @@ void KeeperPlugin::pollForFileCid(const QString& identifier, const QString& file
                         break;
                     }
                 }
-                if (!saveQueue()) qWarning() << "KeeperPlugin: saveQueue failed after file upload step";
+                if (!saveQueue()) {
+                    for (auto& ff : item->files)
+                        if (ff.name == fileName) { ff.cid = ""; ff.status = "failed"; break; }
+                    item->status = "failed";
+                    emitEvent("itemFailed", {QVariantMap{{"id", identifier}, {"error", "saveQueue failed after file upload"}}});
+                    busy_ = false;
+                    if (!QFile::remove(tmpPath)) qWarning() << "KeeperPlugin: failed to remove tmp file on save failure:" << tmpPath;
+                    advanceQueue();
+                    return;
+                }
                 item->currentFile++;
             }
-            QFile::remove(tmpPath);
+            if (!QFile::remove(tmpPath)) qWarning() << "KeeperPlugin: failed to remove tmp file:" << tmpPath;
             processNextFile();
             return;
         }
@@ -630,7 +651,8 @@ void KeeperPlugin::pollForTxHash(const QString& identifier, const QString& cid, 
 void KeeperPlugin::finishItem(const QString& identifier, const QString& collectionCid)
 {
     // Clean up temp files
-    QFile::remove(QDir::tempPath() + "/keeper-" + identifier + "-metadata.json");
+    if (!QFile::remove(QDir::tempPath() + "/keeper-" + identifier + "-metadata.json"))
+        qWarning() << "KeeperPlugin: failed to remove metadata sidecar for" << identifier;
 
     for (auto& i : queue_) {
         if (i.identifier == identifier) {
