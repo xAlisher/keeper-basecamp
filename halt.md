@@ -2,41 +2,60 @@
 
 ## Where we stopped
 
-Implemented `feature/logos-messaging` — replaces localhost HTTP bridge with Logos Messaging
-(delivery_module IPC + Ed25519 signature verification). PR #8 open, handoff posted, awaiting
-Senty review. Extension repo created at `xAlisher/keeper-messaging-extension`.
+Senty review completed on PR #8 (`feature/logos-messaging`). 4 findings: HIGH ×2, MEDIUM ×2.
+Not yet fixed. Build not yet run (Codex sandbox network restriction prevented it).
 
-**Merge gate: test before merge** — do NOT merge PR #8 to main after Senty review; live-test
-first (build → install → pair extension → click Keep → verify queued in keeper UI).
+**Merge gate: test before merge** — do NOT merge PR #8 to main until: findings fixed → build
+passes → live-test passes.
+
+## Senty findings (Round 1) — ALL OPEN
+
+**[HIGH] Replay attack — no timestamp check or seen-message guard**
+File: `src/keeper_plugin.cpp` (onWakuMessageReceived)
+Fix: check `|now - msg.timestamp| <= 30s`; track seen signatures in a bounded set.
+
+**[HIGH] getPairedExtensions() returns full pubkeys — key material in return value**
+File: `src/keeper_plugin.cpp:962`
+Fix: return redacted fingerprints (first 8 + last 8 hex chars) for QML display;
+keep full keys internal. Add separate `getFullPubkey(index)` only if needed.
+
+**[MEDIUM] Pubkey allowlist match not canonicalized — case mismatch → silent auth bypass**
+File: `src/keeper_plugin.cpp:870`
+Fix: `.toLower()` on input in `addPairedExtension()`, `onWakuMessageReceived()`, and at load time.
+
+**[MEDIUM] QML addPairedExtension/removePairedExtension result not checked**
+File: `keeper-ui/qml/Main.qml:487`
+Fix: wrap in `callModuleParse()`; branch on `result.success`; show error toast on failure.
 
 ## Current state
 
-- **keeper-basecamp** branch: `feature/logos-messaging` — commit `9ea1348`, PR #8 open
+- **keeper-basecamp** branch: `feature/logos-messaging` — last commit `f8173ef`, PR #8 open
 - **keeper-messaging-extension**: `xAlisher/keeper-messaging-extension` main, commit `76e9d2b`
-- Build status: NOT YET BUILT on new branch
-- Open issues: #3 (pollForTxHash restart), #4 (inscription label), #5 (clear log button) — deferred
+- Build status: NOT YET BUILT
+- Open issues: #3, #4, #5 — deferred
 
 ## Next steps (in order)
 
-1. **Senty review**: `/codex:review --base main` on PR #8
-2. **Fix any HIGH/MEDIUM findings** from Senty
-3. **Build**: `nix develop` in keeper-basecamp on `feature/logos-messaging`
-4. **Install**: lgx install keeper
-5. **Live-test**:
-   - Logos Messaging pill shows connecting → online
-   - Paste 64-hex pubkey from extension popup → Pair → appears in list
-   - Click Keep on archive.org → item appears in keeper queue
-   - Status updates relay to button label
-   - Confirm v1 extension cannot reach keeper (no HTTP listener)
-   - Craft unknown-pubkey message → confirm keeper ignores it
-6. **Merge PR #8** (only after live-test passes)
-7. **Install extension npm**: `npm install && npm run build` in keeper-messaging-extension
+1. **Fix all 4 Senty findings** on `feature/logos-messaging`
+2. **Commit + push** → re-run Senty (Round 2)
+3. **Build**: `nix develop` in keeper-basecamp
+4. **Install + live-test** (see test checklist below)
+5. **Merge PR #8** only after live-test passes
+
+## Live-test checklist
+
+- [ ] Logos Messaging pill shows connecting → online
+- [ ] Paste 64-hex pubkey from extension popup → Pair → fingerprint appears in list
+- [ ] Click Keep on archive.org → item queued in keeper UI
+- [ ] Status relay: button transitions Queued → Keeping… → Kept
+- [ ] v1 extension: cannot reach keeper (no HTTP listener)
+- [ ] Replay same signed message → keeper ignores (timestamp stale or sig seen)
+- [ ] Unknown pubkey message → keeper ignores (logged)
 
 ## Blockers
 
-- `delivery_module` must be installed separately (absent from AppImage v173 per skill
-  `delivery-module-messaging`) — required before any end-to-end test
-- libsodium link via PkgConfig not yet sandbox-tested
+- `delivery_module` must be installed separately (absent from AppImage v173)
+- libsodium PkgConfig link not yet sandbox-tested
 
 ## Context that's hard to re-derive
 
