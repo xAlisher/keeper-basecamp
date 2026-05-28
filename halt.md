@@ -1,47 +1,42 @@
-# Halt — 2026-05-26
+# Halt — 2026-05-28
 
 ## Where we stopped
 
-Full session implementing beacon#11 fix (module sub-channel inscriptions). Confirmed keeper
-inscriptions now route to the correct keeper channel (`d6ad1ad7...`) instead of the primary
-beacon channel (`47945cf8...`) — verified via node logs showing two distinct channels.
+Implemented `feature/logos-messaging` — replaces localhost HTTP bridge with Logos Messaging
+(delivery_module IPC + Ed25519 signature verification). PR #8 open, handoff posted, awaiting
+Senty review. Extension repo created at `xAlisher/keeper-messaging-extension`.
 
-Discovered a second issue: `zone_publish` (used by `publish_to`) returns a **zone message
-hash**, not a `mantle_tx.hash`. The explorer URL requires the `mantle_tx.hash`. Implemented
-Option A: beacon QML now defers `confirmInscription` for module channels and polls
-`resolveAnchorTxs()` every 10s — when zone message appears in finalized chain, it queries
-`/cryptarchia/blocks` via new `BeaconPlugin::findAnchorTx()` to find the real `mantle_tx.hash`,
-then confirms with the correct ID.
-
-Basecamp restarted with new code installed. **Not yet live-tested** — need to trigger a fresh
-keeper inscription and watch the resolution flow end-to-end.
+**Merge gate: test before merge** — do NOT merge PR #8 to main after Senty review; live-test
+first (build → install → pair extension → click Keep → verify queued in keeper UI).
 
 ## Current state
 
-- **keeper-basecamp** branch: `master` — last commit: `a75310a`
-- **beacon-basecamp** branch: `fix/11-module-channel-publish` — last commit: `d481fc4`
-  (1 commit ahead of origin — needs push)
-- Build status: passing (both built, installed)
-- Open review: beacon PR#13 merged; anchor-tx resolution commit (`d481fc4`) not yet pushed
+- **keeper-basecamp** branch: `feature/logos-messaging` — commit `9ea1348`, PR #8 open
+- **keeper-messaging-extension**: `xAlisher/keeper-messaging-extension` main, commit `76e9d2b`
+- Build status: NOT YET BUILT on new branch
+- Open issues: #3 (pollForTxHash restart), #4 (inscription label), #5 (clear log button) — deferred
 
 ## Next steps (in order)
 
-1. **Push** beacon branch: `cd beacon-basecamp && git push origin fix/11-module-channel-publish`
-2. **Live-test anchor resolution**: paste fresh IA URL in keeper → watch beacon activity log for
-   "zone msg published — awaiting on-chain anchor…" then "anchor resolved: `<hash>`…"
-3. **Verify green URL**: once resolved, confirm keeper shows clickable URL and
-   `https://testnet.blockchain.logos.co/web/explorer/transactions/<hash>` resolves in explorer
-4. **Open PR** for beacon `d481fc4` (or merge to main if tested)
-5. **Implement keeper plan** (`~/.claude/plans/pure-gliding-zebra.md`):
-   - Resume `pollForTxHash` after restart in `loadQueue()`
-   - "Clear" button in keeper QML Log section
-   - Remove debug `qDebug` from `pollForTxHash`
+1. **Senty review**: `/codex:review --base main` on PR #8
+2. **Fix any HIGH/MEDIUM findings** from Senty
+3. **Build**: `nix develop` in keeper-basecamp on `feature/logos-messaging`
+4. **Install**: lgx install keeper
+5. **Live-test**:
+   - Logos Messaging pill shows connecting → online
+   - Paste 64-hex pubkey from extension popup → Pair → appears in list
+   - Click Keep on archive.org → item appears in keeper queue
+   - Status updates relay to button label
+   - Confirm v1 extension cannot reach keeper (no HTTP listener)
+   - Craft unknown-pubkey message → confirm keeper ignores it
+6. **Merge PR #8** (only after live-test passes)
+7. **Install extension npm**: `npm install && npm run build` in keeper-messaging-extension
 
 ## Blockers
 
-- `resolveAnchorTxs` not yet live-tested — anchor tx timing depends on zone validators;
-  may need slot range tuning if the 800-slot window is too narrow or `query_channel` returns
-  messages before the ChannelInscribe tx appears in blocks
+- `delivery_module` must be installed separately (absent from AppImage v173 per skill
+  `delivery-module-messaging`) — required before any end-to-end test
+- libsodium link via PkgConfig not yet sandbox-tested
 
 ## Context that's hard to re-derive
 
