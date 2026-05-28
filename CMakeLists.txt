@@ -9,7 +9,7 @@ if(DEFINED ENV{LOGOS_MODULE_BUILDER_ROOT})
 
     logos_module(
         NAME keeper
-        LINK_LIBRARIES PkgConfig::sodium
+        LINK_LIBRARIES PkgConfig::sodium Qt6::Network
         SOURCES
             src/keeper_interface.h
             src/keeper_plugin.h

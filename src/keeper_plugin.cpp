@@ -967,16 +967,25 @@ QString KeeperPlugin::addPairedExtension(const QString& hexPubkey)
         return R"({"success":true,"note":"already paired"})";
     }
     m_pairedPubkeys.append(key);
-    savePairedExtensions();
+    if (!savePairedExtensions()) {
+        m_pairedPubkeys.removeLast();
+        return R"({"success":false,"error":"persistence write failed"})";
+    }
     qDebug() << "KeeperPlugin: paired extension" << key.left(16) << "...";
     return R"({"success":true})";
 }
 
 QString KeeperPlugin::removePairedExtension(const QString& hexPubkey)
 {
-    bool removed = m_pairedPubkeys.removeOne(hexPubkey.trimmed().toLower());
-    if (removed) savePairedExtensions();
-    return removed ? R"({"success":true})" : R"({"success":false,"error":"not found"})";
+    const QString key = hexPubkey.trimmed().toLower();
+    const int idx = m_pairedPubkeys.indexOf(key);
+    if (idx < 0) return R"({"success":false,"error":"not found"})";
+    m_pairedPubkeys.removeAt(idx);
+    if (!savePairedExtensions()) {
+        m_pairedPubkeys.insert(idx, key);
+        return R"({"success":false,"error":"persistence write failed"})";
+    }
+    return R"({"success":true})";
 }
 
 QString KeeperPlugin::getPairedExtensions()
@@ -998,16 +1007,27 @@ QString KeeperPlugin::removePairedExtensionAt(int idx)
 {
     if (idx < 0 || idx >= m_pairedPubkeys.size())
         return R"({"success":false,"error":"index out of range"})";
-    m_pairedPubkeys.removeAt(idx);
-    savePairedExtensions();
+    const QString removed = m_pairedPubkeys.takeAt(idx);
+    if (!savePairedExtensions()) {
+        m_pairedPubkeys.insert(idx, removed);
+        return R"({"success":false,"error":"persistence write failed"})";
+    }
     return R"({"success":true})";
 }
 
-void KeeperPlugin::savePairedExtensions()
+bool KeeperPlugin::savePairedExtensions()
 {
     QJsonArray arr;
     for (const auto& pk : m_pairedPubkeys) arr.append(pk);
     QFile f(persistPath("keeper-paired-extensions.json"));
-    if (f.open(QIODevice::WriteOnly))
-        f.write(QJsonDocument(arr).toJson(QJsonDocument::Compact));
+    if (!f.open(QIODevice::WriteOnly)) {
+        qWarning() << "KeeperPlugin: failed to open paired-extensions store for writing:" << f.errorString();
+        return false;
+    }
+    const QByteArray data = QJsonDocument(arr).toJson(QJsonDocument::Compact);
+    if (f.write(data) != data.size()) {
+        qWarning() << "KeeperPlugin: short write on paired-extensions store:" << f.errorString();
+        return false;
+    }
+    return true;
 }

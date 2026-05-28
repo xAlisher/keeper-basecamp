@@ -272,7 +272,8 @@ Item {
                     var val = urlField.text.trim()
                     if (!val) return
                     if (typeof logos === "undefined" || !logos.callModule) return
-                    logos.callModule("keeper", "preserveItem", [val])
+                    var result = callModuleParse(logos.callModule("keeper", "preserveItem", [val]))
+                    if (!result || !result.success) return
                     urlField.text = ""
                     root.refresh()
                 }
@@ -326,8 +327,8 @@ Item {
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
                             if (typeof logos === "undefined" || !logos.callModule) return
-                            logos.callModule("keeper", "clearQueue", [])
-                            root.refresh()
+                            var result = callModuleParse(logos.callModule("keeper", "clearQueue", []))
+                            if (result && result.success) root.refresh()
                         }
                     }
                 }
@@ -427,8 +428,8 @@ Item {
                                 cursorShape: Qt.PointingHandCursor
                                 onClicked: {
                                     if (typeof logos === "undefined" || !logos.callModule) return
-                                    logos.callModule("keeper", "cancelItem", [identifier])
-                                    root.refresh()
+                                    var result = callModuleParse(logos.callModule("keeper", "cancelItem", [identifier]))
+                                    if (result && result.success) root.refresh()
                                 }
                             }
                         }

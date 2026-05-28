@@ -93,7 +93,7 @@ private:
     void loadQueue();
     void saveQueue();
     void saveInscriptionQueue();
-    void savePairedExtensions();
+    bool savePairedExtensions();
     void appendLog(const KeeperItem& item);
     QString persistPath(const QString& filename);
 
