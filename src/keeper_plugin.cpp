@@ -157,7 +157,11 @@ QString KeeperPlugin::getLog()
 QString KeeperPlugin::clearLog()
 {
     log_.clear();
-    QFile::remove(persistPath("keeper-log.json"));
+    const QString path = persistPath("keeper-log.json");
+    if (QFile::exists(path) && !QFile::remove(path)) {
+        qWarning() << "KeeperPlugin: failed to remove log file:" << path;
+        return R"({"success":false,"error":"log file remove failed"})";
+    }
     return R"({"success":true})";
 }
 
@@ -166,7 +170,11 @@ QString KeeperPlugin::clearQueue()
     if (busy_)
         return R"({"success":false,"error":"cannot clear queue while an item is active"})";
     queue_.clear();
-    QFile::remove(persistPath("keeper-queue.json"));
+    const QString path = persistPath("keeper-queue.json");
+    if (QFile::exists(path) && !QFile::remove(path)) {
+        qWarning() << "KeeperPlugin: failed to remove queue file:" << path;
+        return R"({"success":false,"error":"queue file remove failed"})";
+    }
     return R"({"success":true})";
 }
 
@@ -751,8 +759,13 @@ void KeeperPlugin::saveQueue()
         arr.append(obj);
     }
     QFile f(persistPath("queue.json"));
-    if (f.open(QIODevice::WriteOnly))
-        f.write(QJsonDocument(arr).toJson(QJsonDocument::Compact));
+    if (!f.open(QIODevice::WriteOnly)) {
+        qWarning() << "KeeperPlugin: failed to open queue file for writing:" << f.errorString();
+        return;
+    }
+    const QByteArray data = QJsonDocument(arr).toJson(QJsonDocument::Compact);
+    if (f.write(data) != data.size())
+        qWarning() << "KeeperPlugin: short write on queue file:" << f.errorString();
 }
 
 void KeeperPlugin::appendLog(const KeeperItem& item)
@@ -781,8 +794,13 @@ void KeeperPlugin::appendLog(const KeeperItem& item)
     QJsonArray arr;
     for (const auto& o : log_) arr.append(o);
     QFile f(persistPath("keeper-log.json"));
-    if (f.open(QIODevice::WriteOnly))
-        f.write(QJsonDocument(arr).toJson(QJsonDocument::Compact));
+    if (!f.open(QIODevice::WriteOnly)) {
+        qWarning() << "KeeperPlugin: failed to open log file for writing:" << f.errorString();
+        return;
+    }
+    const QByteArray data = QJsonDocument(arr).toJson(QJsonDocument::Compact);
+    if (f.write(data) != data.size())
+        qWarning() << "KeeperPlugin: short write on log file:" << f.errorString();
 }
 
 // ── Logos Messaging (delivery_module) ────────────────────────────────────────
