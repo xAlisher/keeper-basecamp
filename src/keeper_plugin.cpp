@@ -163,12 +163,13 @@ QString KeeperPlugin::getLog()
 
 QString KeeperPlugin::clearLog()
 {
-    log_.clear();
+    // Check persistence before mutating memory so we can return failure without divergence
     const QString path = persistPath("keeper-log.json");
     if (QFile::exists(path) && !QFile::remove(path)) {
         qWarning() << "KeeperPlugin: failed to remove log file:" << path;
         return R"({"success":false,"error":"log file remove failed"})";
     }
+    log_.clear();
     return R"({"success":true})";
 }
 
@@ -176,12 +177,13 @@ QString KeeperPlugin::clearQueue()
 {
     if (busy_)
         return R"({"success":false,"error":"cannot clear queue while an item is active"})";
-    queue_.clear();
+    // Check persistence before mutating memory so we can return failure without divergence
     const QString path = persistPath("queue.json");
     if (QFile::exists(path) && !QFile::remove(path)) {
         qWarning() << "KeeperPlugin: failed to remove queue file:" << path;
         return R"({"success":false,"error":"queue file remove failed"})";
     }
+    queue_.clear();
     return R"({"success":true})";
 }
 
@@ -203,9 +205,13 @@ QString KeeperPlugin::getInscriptionQueue() const
 
 QString KeeperPlugin::markInscribed(const QString& cid)
 {
+    // Snapshot before mutation so we can roll back on persistence failure
+    auto backup = inscriptionQueue_;
     inscriptionQueue_.removeIf([&](const QJsonObject& e){ return e["cid"].toString() == cid; });
-    if (!saveInscriptionQueue())
+    if (!saveInscriptionQueue()) {
+        inscriptionQueue_ = std::move(backup);
         return R"({"success":false,"error":"persistence write failed"})";
+    }
     return R"({"success":true})";
 }
 
@@ -267,6 +273,8 @@ void KeeperPlugin::fetchMetadata(const QString& identifier)
             emitEvent("itemFailed", {QVariantMap{{"id", identifier}, {"error", reply->errorString()}}});
             reply->deleteLater();
             busy_ = false;
+            // saveQueue failure is logged; advanceQueue() processes the NEXT item,
+            // not this one — stalling here would permanently wedge the queue.
             if (!saveQueue()) qWarning() << "KeeperPlugin: saveQueue failed after metadata fetch error";
             advanceQueue();
             return;
@@ -308,6 +316,7 @@ void KeeperPlugin::fetchMetadata(const QString& identifier)
             item->status = "failed";
             emitEvent("itemFailed", {QVariantMap{{"id", identifier}, {"error", "no original files found"}}});
             busy_ = false;
+            // saveQueue failure is logged; advanceQueue() processes the NEXT item — intentional.
             if (!saveQueue()) qWarning() << "KeeperPlugin: saveQueue failed after no-files failure";
             advanceQueue();
             return;
@@ -537,7 +546,7 @@ void KeeperPlugin::pollForFileCid(const QString& identifier, const QString& file
             }
             item->currentFile++;
         }
-        QFile::remove(tmpPath);
+        if (!QFile::remove(tmpPath)) qWarning() << "KeeperPlugin: failed to remove tmp file (CID timeout):" << tmpPath;
         processNextFile();
         return;
     }
@@ -663,8 +672,17 @@ void KeeperPlugin::finishItem(const QString& identifier, const QString& collecti
             break;
         }
     }
+    // Save "done" state while item is still in queue, before removing it.
+    // This way a restart will see the item as done (not active) even if the
+    // subsequent remove-save fails.
+    if (!saveQueue())
+        qWarning() << "KeeperPlugin: saveQueue failed persisting done state in finishItem";
     queue_.removeIf([&](const KeeperItem& i){ return i.identifier == identifier; });
-    if (!saveQueue()) qWarning() << "KeeperPlugin: saveQueue failed in finishItem";
+    // Best-effort second save to clean up the removed item from the file.
+    // Advancing is intentional even on failure — stalling busy_ indefinitely
+    // would be worse than a benign restart-retry.
+    if (!saveQueue())
+        qWarning() << "KeeperPlugin: saveQueue failed removing done item in finishItem";
     busy_ = false;
     advanceQueue();
 }
