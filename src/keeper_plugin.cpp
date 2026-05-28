@@ -267,7 +267,7 @@ void KeeperPlugin::fetchMetadata(const QString& identifier)
             emitEvent("itemFailed", {QVariantMap{{"id", identifier}, {"error", reply->errorString()}}});
             reply->deleteLater();
             busy_ = false;
-            saveQueue();
+            if (!saveQueue()) qWarning() << "KeeperPlugin: saveQueue failed after metadata fetch error";
             advanceQueue();
             return;
         }
@@ -275,7 +275,11 @@ void KeeperPlugin::fetchMetadata(const QString& identifier)
         QByteArray rawMeta = reply->readAll();
         // Save raw IA metadata for collection manifest upload
         { QFile mf(QDir::tempPath() + "/keeper-" + identifier + "-metadata.json");
-          if (mf.open(QIODevice::WriteOnly)) { mf.write(rawMeta); mf.close(); } }
+          if (mf.open(QIODevice::WriteOnly)) {
+              if (mf.write(rawMeta) != rawMeta.size())
+                  qWarning() << "KeeperPlugin: short write on IA metadata sidecar for" << identifier;
+              mf.close();
+          } }
         QJsonDocument doc  = QJsonDocument::fromJson(rawMeta);
         QJsonObject   root = doc.object();
         reply->deleteLater();
@@ -304,7 +308,7 @@ void KeeperPlugin::fetchMetadata(const QString& identifier)
             item->status = "failed";
             emitEvent("itemFailed", {QVariantMap{{"id", identifier}, {"error", "no original files found"}}});
             busy_ = false;
-            saveQueue();
+            if (!saveQueue()) qWarning() << "KeeperPlugin: saveQueue failed after no-files failure";
             advanceQueue();
             return;
         }
@@ -312,7 +316,7 @@ void KeeperPlugin::fetchMetadata(const QString& identifier)
         emitEvent("itemQueued", {QVariantMap{
             {"id", identifier}, {"title", item->title}, {"fileCount", item->files.size()}
         }});
-        saveQueue();
+        if (!saveQueue()) qWarning() << "KeeperPlugin: saveQueue failed after metadata parse";
         item->currentFile = 0;
         processNextFile();
     });
@@ -338,7 +342,7 @@ void KeeperPlugin::processNextFile()
     if (item->currentFile >= item->files.size()) {
         // All files uploaded — inscribe directly with ia:{identifier} as the stable key
         item->status = "inscribing";
-        saveQueue();
+        if (!saveQueue()) qWarning() << "KeeperPlugin: saveQueue failed on inscribing transition";
         inscribeToBeacon(item->identifier, "ia:" + item->identifier);
         return;
     }
@@ -492,7 +496,7 @@ void KeeperPlugin::pollForFileCid(const QString& identifier, const QString& file
                         break;
                     }
                 }
-                saveQueue();
+                if (!saveQueue()) qWarning() << "KeeperPlugin: saveQueue failed after file upload step";
                 item->currentFile++;
             }
             QFile::remove(tmpPath);
@@ -554,8 +558,17 @@ void KeeperPlugin::inscribeToBeacon(const QString& identifier, const QString& ci
     entry["cid"]   = cid;
     entry["label"] = label;
     inscriptionQueue_.append(entry);
-    if (!saveInscriptionQueue())
-        qWarning() << "KeeperPlugin: failed to persist inscription queue entry for" << cid;
+    if (!saveInscriptionQueue()) {
+        inscriptionQueue_.removeLast();
+        qWarning() << "KeeperPlugin: inscription queue write failed for" << identifier << "— marking failed";
+        for (auto& qitem : queue_)
+            if (qitem.identifier == identifier) { qitem.status = "failed"; break; }
+        if (!saveQueue()) qWarning() << "KeeperPlugin: saveQueue also failed marking item as failed";
+        emitEvent("itemFailed", {QVariantMap{{"id", identifier}, {"error", "inscription queue write failed"}}});
+        busy_ = false;
+        advanceQueue();
+        return;
+    }
 
     emitEvent("itemPreserved", {QVariantMap{{"id", identifier}, {"cid", cid}}});
     finishItem(identifier, cid);
@@ -629,7 +642,7 @@ void KeeperPlugin::finishItem(const QString& identifier, const QString& collecti
         }
     }
     queue_.removeIf([&](const KeeperItem& i){ return i.identifier == identifier; });
-    saveQueue();
+    if (!saveQueue()) qWarning() << "KeeperPlugin: saveQueue failed in finishItem";
     busy_ = false;
     advanceQueue();
 }
