@@ -197,8 +197,9 @@ QString KeeperPlugin::getInscriptionQueue() const
 QString KeeperPlugin::markInscribed(const QString& cid)
 {
     inscriptionQueue_.removeIf([&](const QJsonObject& e){ return e["cid"].toString() == cid; });
-    saveInscriptionQueue();
-    return R"({"ok":true})";
+    if (!saveInscriptionQueue())
+        return R"({"success":false,"error":"persistence write failed"})";
+    return R"({"success":true})";
 }
 
 QString KeeperPlugin::getConfig()
@@ -668,13 +669,21 @@ QString KeeperPlugin::persistPath(const QString& filename)
     return m_persistencePath + "/" + filename;
 }
 
-void KeeperPlugin::saveInscriptionQueue()
+bool KeeperPlugin::saveInscriptionQueue()
 {
     QJsonArray arr;
     for (const auto& e : inscriptionQueue_) arr.append(e);
     QFile f(persistPath("keeper-inscription-queue.json"));
-    if (f.open(QIODevice::WriteOnly))
-        f.write(QJsonDocument(arr).toJson(QJsonDocument::Compact));
+    if (!f.open(QIODevice::WriteOnly)) {
+        qWarning() << "KeeperPlugin: failed to open inscription-queue for writing:" << f.errorString();
+        return false;
+    }
+    const QByteArray data = QJsonDocument(arr).toJson(QJsonDocument::Compact);
+    if (f.write(data) != data.size()) {
+        qWarning() << "KeeperPlugin: short write on inscription-queue:" << f.errorString();
+        return false;
+    }
+    return true;
 }
 
 void KeeperPlugin::loadQueue()
