@@ -20,7 +20,7 @@ KeeperPlugin::KeeperPlugin()
     : nam_(new QNetworkAccessManager(this))
 {}
 
-void KeeperPlugin::initLogos(LogosAPI* api)
+QString KeeperPlugin::initLogos(LogosAPI* api)
 {
     logosAPI = api;
 
@@ -62,6 +62,7 @@ void KeeperPlugin::initLogos(LogosAPI* api)
         }
     });
     qDebug() << "KeeperPlugin: initialized";
+    return R"({"success":true})";
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -82,7 +83,10 @@ QString KeeperPlugin::preserveItem(const QString& urlOrId)
     item.title      = id;
     item.status     = "queued";
     queue_.append(item);
-    saveQueue();
+    if (!saveQueue()) {
+        queue_.removeLast();
+        return R"({"success":false,"error":"persistence write failed"})";
+    }
 
     emitEvent("itemQueued", {QVariantMap{{"id", id}, {"title", id}}});
     publishStatus(id, "queued");
@@ -127,7 +131,7 @@ QString KeeperPlugin::preserveCollection(const QString& name, int limit)
         delete queued; delete cap;
     });
 
-    return QString(R"({"queued":"pending","collection":"%1"})").arg(name);
+    return QString(R"({"success":true,"queued":"pending","collection":"%1"})").arg(name);
 }
 
 QString KeeperPlugin::cancelItem(const QString& identifier)
@@ -135,7 +139,10 @@ QString KeeperPlugin::cancelItem(const QString& identifier)
     for (auto& item : queue_) {
         if (item.identifier == identifier) {
             item.status = "cancelled";
-            saveQueue();
+            if (!saveQueue()) {
+                item.status = "queued";  // roll back
+                return R"({"success":false,"error":"persistence write failed"})";
+            }
             return R"({"success":true})";
         }
     }
@@ -357,10 +364,12 @@ void KeeperPlugin::downloadFile(const QString& identifier, const KeeperFile& fil
     QString safeName = QString(file.name).replace('/', '_');
     QString tmpPath  = QDir::tempPath() + QString("/keeper-%1-%2").arg(safeId, safeName);
     auto* f = new QFile(tmpPath, this);
-    f->open(QIODevice::WriteOnly);
+    if (!f->open(QIODevice::WriteOnly))
+        qWarning() << "KeeperPlugin: failed to open download temp file:" << tmpPath << f->errorString();
 
     connect(reply, &QNetworkReply::readyRead, this, [reply, f]{
-        f->write(reply->readAll());
+        if (f->isOpen() && f->write(reply->readAll()) < 0)
+            qWarning() << "KeeperPlugin: write error on download temp file:" << f->errorString();
     });
 
     QString fileName = file.name;
@@ -545,7 +554,8 @@ void KeeperPlugin::inscribeToBeacon(const QString& identifier, const QString& ci
     entry["cid"]   = cid;
     entry["label"] = label;
     inscriptionQueue_.append(entry);
-    saveInscriptionQueue();
+    if (!saveInscriptionQueue())
+        qWarning() << "KeeperPlugin: failed to persist inscription queue entry for" << cid;
 
     emitEvent("itemPreserved", {QVariantMap{{"id", identifier}, {"cid", cid}}});
     finishItem(identifier, cid);
@@ -583,8 +593,13 @@ void KeeperPlugin::pollForTxHash(const QString& identifier, const QString& cid, 
                 QJsonArray arr;
                 for (const auto& o : log_) arr.append(o);
                 QFile f(persistPath("keeper-log.json"));
-                if (f.open(QIODevice::WriteOnly))
-                    f.write(QJsonDocument(arr).toJson(QJsonDocument::Compact));
+                if (!f.open(QIODevice::WriteOnly)) {
+                    qWarning() << "KeeperPlugin: failed to open log for tx-hash update:" << f.errorString();
+                } else {
+                    const QByteArray data = QJsonDocument(arr).toJson(QJsonDocument::Compact);
+                    if (f.write(data) != data.size())
+                        qWarning() << "KeeperPlugin: short write on log tx-hash update:" << f.errorString();
+                }
                 emitEvent("logUpdated", {QVariantMap{{"id", identifier}, {"txHash", txHash}}});
                 return;
             }
@@ -745,7 +760,7 @@ void KeeperPlugin::loadQueue()
     }
 }
 
-void KeeperPlugin::saveQueue()
+bool KeeperPlugin::saveQueue()
 {
     QJsonArray arr;
     for (const auto& item : queue_) {
@@ -770,11 +785,14 @@ void KeeperPlugin::saveQueue()
     QFile f(persistPath("queue.json"));
     if (!f.open(QIODevice::WriteOnly)) {
         qWarning() << "KeeperPlugin: failed to open queue file for writing:" << f.errorString();
-        return;
+        return false;
     }
     const QByteArray data = QJsonDocument(arr).toJson(QJsonDocument::Compact);
-    if (f.write(data) != data.size())
+    if (f.write(data) != data.size()) {
         qWarning() << "KeeperPlugin: short write on queue file:" << f.errorString();
+        return false;
+    }
+    return true;
 }
 
 void KeeperPlugin::appendLog(const KeeperItem& item)
@@ -905,8 +923,7 @@ void KeeperPlugin::onWakuMessageReceived(const QVariantList& data)
 
     // Whitelist check
     if (!m_pairedPubkeys.contains(pubkeyHex)) {
-        qDebug() << "KeeperPlugin: Logos Messaging — unknown pubkey"
-                 << pubkeyHex.left(16) << "..., ignored";
+        qDebug() << "KeeperPlugin: Logos Messaging — unknown pubkey, ignored";
         return;
     }
 
@@ -1000,7 +1017,7 @@ QString KeeperPlugin::addPairedExtension(const QString& hexPubkey)
         m_pairedPubkeys.removeLast();
         return R"({"success":false,"error":"persistence write failed"})";
     }
-    qDebug() << "KeeperPlugin: paired extension" << key.left(16) << "...";
+    qDebug() << "KeeperPlugin: paired extension added";
     return R"({"success":true})";
 }
 

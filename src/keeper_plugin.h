@@ -43,7 +43,7 @@ public:
 
     QString name()    const override { return "keeper"; }
     QString version() const override { return "0.1.0"; }
-    Q_INVOKABLE void initLogos(LogosAPI* api);
+    Q_INVOKABLE QString initLogos(LogosAPI* api);
 
     Q_INVOKABLE QString preserveItem(const QString& urlOrId) override;
     Q_INVOKABLE QString preserveCollection(const QString& name, int limit) override;
@@ -91,7 +91,7 @@ private:
 
     // Persistence
     void loadQueue();
-    void saveQueue();
+    bool saveQueue();
     bool saveInscriptionQueue();
     bool savePairedExtensions();
     void appendLog(const KeeperItem& item);
