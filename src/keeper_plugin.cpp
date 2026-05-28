@@ -89,7 +89,7 @@ QString KeeperPlugin::preserveItem(const QString& urlOrId)
     qDebug() << "KeeperPlugin: queued" << id;
 
     if (!busy_) advanceQueue();
-    return QString(R"({"queued":true,"id":"%1"})").arg(id);
+    return QString(R"({"success":true,"id":"%1"})").arg(id);
 }
 
 QString KeeperPlugin::preserveCollection(const QString& name, int limit)
@@ -158,14 +158,16 @@ QString KeeperPlugin::clearLog()
 {
     log_.clear();
     QFile::remove(persistPath("keeper-log.json"));
-    return R"({"ok":true})";
+    return R"({"success":true})";
 }
 
 QString KeeperPlugin::clearQueue()
 {
+    if (busy_)
+        return R"({"success":false,"error":"cannot clear queue while an item is active"})";
     queue_.clear();
     QFile::remove(persistPath("keeper-queue.json"));
-    return R"({"ok":true})";
+    return R"({"success":true})";
 }
 
 QString KeeperPlugin::getLogosMsgStatus() const

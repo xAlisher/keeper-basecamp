@@ -610,8 +610,8 @@ Item {
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
                             if (typeof logos === "undefined" || !logos.callModule) return
-                            logos.callModule("keeper", "clearLog", [])
-                            root.refresh()
+                            var result = callModuleParse(logos.callModule("keeper", "clearLog", []))
+                            if (result && result.success) root.refresh()
                         }
                     }
                 }
