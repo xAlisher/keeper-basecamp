@@ -8,7 +8,7 @@ Not yet fixed. Build not yet run (Codex sandbox network restriction prevented it
 **Merge gate: test before merge** — do NOT merge PR #8 to main until: findings fixed → build
 passes → live-test passes.
 
-## Senty findings (Round 1) — ALL FIXED (commit e8c92e3)
+## Senty — ALL ROUNDS COMPLETE — LGTM (Round 12, commit 6809c98)
 
 **[HIGH] Replay attack — no timestamp check or seen-message guard**
 File: `src/keeper_plugin.cpp` (onWakuMessageReceived)
@@ -29,18 +29,17 @@ Fix: wrap in `callModuleParse()`; branch on `result.success`; show error toast o
 
 ## Current state
 
-- **keeper-basecamp** branch: `feature/logos-messaging` — last commit `e8c92e3`, PR #8 open
+- **keeper-basecamp** branch: `feature/logos-messaging` — last commit `6809c98`, PR #8 open
 - **keeper-messaging-extension**: `xAlisher/keeper-messaging-extension` main, commit `76e9d2b`
 - Build status: NOT YET BUILT
 - Open issues: #3, #4, #5 — deferred
 
 ## Next steps (in order)
 
-1. ~~Fix all 4 Senty findings~~ — done (e8c92e3)
-2. **Re-run Senty** (Round 2) — should be clean
-3. **Build**: `nix develop` in keeper-basecamp
-4. **Install + live-test** (see test checklist below)
-5. **Merge PR #8** only after live-test passes
+1. ~~Fix all Senty findings~~ — LGTM after Round 12 (6809c98)
+2. **Build**: `nix develop` in keeper-basecamp
+3. **Install + live-test** (see test checklist below)
+4. **Merge PR #8** only after live-test passes
 
 ## Live-test checklist
 
