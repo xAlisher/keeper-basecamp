@@ -283,7 +283,9 @@ void KeeperPlugin::fetchMetadata(const QString& identifier)
         QByteArray rawMeta = reply->readAll();
         // Save raw IA metadata for collection manifest upload
         { QFile mf(QDir::tempPath() + "/keeper-" + identifier + "-metadata.json");
-          if (mf.open(QIODevice::WriteOnly)) {
+          if (!mf.open(QIODevice::WriteOnly)) {
+              qWarning() << "KeeperPlugin: failed to open IA metadata sidecar for" << identifier << mf.errorString();
+          } else {
               if (mf.write(rawMeta) != rawMeta.size())
                   qWarning() << "KeeperPlugin: short write on IA metadata sidecar for" << identifier;
               mf.close();
@@ -389,7 +391,8 @@ void KeeperPlugin::downloadFile(const QString& identifier, const KeeperFile& fil
     QString safeName = QString(file.name).replace('/', '_');
     QString tmpPath  = QDir::tempPath() + QString("/keeper-%1-%2").arg(safeId, safeName);
     auto* f = new QFile(tmpPath, this);
-    if (!f->open(QIODevice::WriteOnly))
+    const bool tmpOpen = f->open(QIODevice::WriteOnly);
+    if (!tmpOpen)
         qWarning() << "KeeperPlugin: failed to open download temp file:" << tmpPath << f->errorString();
 
     connect(reply, &QNetworkReply::readyRead, this, [reply, f]{
@@ -406,7 +409,7 @@ void KeeperPlugin::downloadFile(const QString& identifier, const KeeperFile& fil
             }});
         });
 
-    connect(reply, &QNetworkReply::finished, this, [this, reply, f, tmpPath, identifier, fileName] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, f, tmpPath, tmpOpen, identifier, fileName] {
         f->close();
         reply->deleteLater();
 
@@ -425,6 +428,17 @@ void KeeperPlugin::downloadFile(const QString& identifier, const KeeperFile& fil
         KeeperFile* kf = nullptr;
         for (auto& ff : item->files)
             if (ff.name == fileName) { kf = &ff; break; }
+
+        // Fail this file if the local temp file was never writable — uploading a missing/truncated
+        // file to stash would silently corrupt the item.
+        if (!tmpOpen) {
+            if (kf) { kf->status = "failed"; kf->error = "temp file open failed"; }
+            if (!QFile::remove(tmpPath)) qWarning() << "KeeperPlugin: failed to remove tmp file:" << tmpPath;
+            delete f;
+            item->currentFile++;
+            processNextFile();
+            return;
+        }
 
         if (reply->error() != QNetworkReply::NoError) {
             if (kf) { kf->status = "failed"; kf->error = reply->errorString(); }
@@ -636,14 +650,19 @@ void KeeperPlugin::pollForTxHash(const QString& identifier, const QString& cid, 
                 QJsonArray arr;
                 for (const auto& o : log_) arr.append(o);
                 QFile f(persistPath("keeper-log.json"));
+                bool logSaved = false;
                 if (!f.open(QIODevice::WriteOnly)) {
                     qWarning() << "KeeperPlugin: failed to open log for tx-hash update:" << f.errorString();
                 } else {
                     const QByteArray data = QJsonDocument(arr).toJson(QJsonDocument::Compact);
                     if (f.write(data) != data.size())
                         qWarning() << "KeeperPlugin: short write on log tx-hash update:" << f.errorString();
+                    else
+                        logSaved = true;
                 }
-                emitEvent("logUpdated", {QVariantMap{{"id", identifier}, {"txHash", txHash}}});
+                // Only notify observers if the update was durably saved
+                if (logSaved)
+                    emitEvent("logUpdated", {QVariantMap{{"id", identifier}, {"txHash", txHash}}});
                 return;
             }
             break; // found the entry but no tx hash yet — keep polling
