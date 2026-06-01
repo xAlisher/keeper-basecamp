@@ -61,9 +61,9 @@ At any time (any node — challenge-response audit):
 
 The on-chain `ItemRecord` is the source of truth — not Beacon, not Cord.
 
-> **Instruction scope note:** The flowchart above shows the core use case (10 of 18 v1
+> **Instruction scope note:** The flowchart above shows the core use case (10 of 19 v1
 > instructions). Omitted for brevity: `initialize_program`, `open_dispute`,
-> `vote_on_dispute`, `take_monthly_snapshot`, `withdraw`, `deregister_user`,
+> `vote_on_dispute`, `snapshot_user`, `take_monthly_snapshot`, `withdraw`, `deregister_user`,
 > `deregister_item`, `migrate_score`. See the Instructions section for the complete set.
 
 ## Dual Token Model
@@ -191,6 +191,10 @@ pub struct UserStats {
     // Populated by claim_monthly_reward and claim_item_bounty.
     // Cleared by withdraw(). Remove when ChainedCall stable transfer is confirmed.
     pub claimable_balance:     u128,
+    // Per-user active_bytes snapshot (Finding 11 fix): locked at snapshot_user() time.
+    // claim_monthly_reward uses this value, not live active_bytes.
+    pub snapshot_active_bytes: u64,
+    pub snapshot_claim_month:  u32,    // YYYYMM of the active snapshot; 0 = never snapshotted
 }
 ```
 
@@ -229,9 +233,23 @@ One per `(user, month)`. Tracks whether a user has claimed their monthly stable 
 pub struct RewardClaim {
     pub user:                AccountId,
     pub month:               u32,
-    pub active_bytes_snapshot: u64,   // user.active_bytes at time of claim
+    pub active_bytes_snapshot: u64,   // user.active_bytes at snapshot_user() time, not claim time
     pub amount:              u128,    // stable transferred this claim
     pub claimed:             bool,
+}
+```
+
+### `BountyClaim`
+One per `(user, ia_id, month)`. Prevents double-claiming the same item bounty in the same month.
+Created by `claim_item_bounty`. (Finding 12 fix)
+
+```rust
+#[account_type]
+pub struct BountyClaim {
+    pub user:   AccountId,
+    pub ia_id:  String,
+    pub month:  u32,
+    pub amount: u128,   // stable paid out this claim
 }
 ```
 
@@ -565,15 +583,17 @@ pub fn claim_monthly_reward(
 //   // M1 fix: use snapshot values so all claimants in the same month share a fixed budget
 //   if pool.snapshot_month != month → return Err(SnapshotNotTaken)  // must call take_monthly_snapshot first
 //   if pool.snapshot_total_active_bytes == 0 → return Err(NoActiveStorage)
+//   // Finding 11 fix: use per-user snapshot, not live active_bytes
+//   if stats.snapshot_claim_month != month → return Err(UserSnapshotNotTaken)  // must call snapshot_user first
 //   pool_budget     = pool.snapshot_balance
 //   reward_per_byte = pool_budget / pool.snapshot_total_active_bytes
-//   raw_reward      = stats.active_bytes as u128 × reward_per_byte
+//   raw_reward      = stats.snapshot_active_bytes as u128 × reward_per_byte
 //   cap             = pool_budget × pool.max_user_share_bp / 10_000
 //   payout          = min(raw_reward, cap)
-//   transfer payout stable from pool to user
+//   user_stats.claimable_balance    += payout   // internal ledger; withdrawn via withdraw()
 //   pool.fee_balance                -= payout
 //   pool.snapshot_balance           -= payout   // track remaining snapshot budget
-//   claim.active_bytes_snapshot      = stats.active_bytes
+//   claim.active_bytes_snapshot      = stats.snapshot_active_bytes
 //   claim.amount                     = payout
 //   claim.claimed                    = true
 ```
@@ -604,8 +624,8 @@ pub fn challenge_holding(
     // the node whose holding is being challenged
     preserver: AccountWithMetadata,
 
-    #[account(pda = [literal("pres"), account("preserver"), arg("ia_id")])]
-    record: AccountWithMetadata,   // must exist — can only challenge registered items
+    #[account(mut, pda = [literal("pres"), account("preserver"), arg("ia_id")])]
+    record: AccountWithMetadata,   // must exist; mut required to persist open_challenge_count increment (H3 fix)
 
     #[account(mut, pda = [literal("pool")])]
     pool: AccountWithMetadata,
@@ -717,6 +737,36 @@ next claim cycle.
 
 ---
 
+### `snapshot_user`
+
+Called once per month per user, after `take_monthly_snapshot`. Locks the user's
+`active_bytes` into `UserStats.snapshot_active_bytes` for the current snapshot month.
+`claim_monthly_reward` reads this value instead of live `active_bytes`, preventing
+manipulation between pool snapshot and claim time. (Finding 11 fix)
+
+```rust
+#[instruction]
+pub fn snapshot_user(
+    #[account(mut, pda = [literal("stats"), account("user")])]
+    stats: AccountWithMetadata,
+
+    #[account(signer)]
+    user: AccountWithMetadata,
+
+    #[account(pda = [literal("pool")])]
+    pool: AccountWithMetadata,
+
+    month: u32,   // YYYYMM
+) -> SpelResult
+// Logic:
+//   if pool.snapshot_month != month → return Err(SnapshotNotTaken)  // pool snapshot must precede user snapshot
+//   if stats.snapshot_claim_month == month → return Err(AlreadySnapshotted)
+//   stats.snapshot_active_bytes = stats.active_bytes
+//   stats.snapshot_claim_month  = month
+```
+
+---
+
 ### `take_monthly_snapshot`
 
 Called once per month before any `claim_monthly_reward` call. Freezes the pool budget
@@ -735,10 +785,12 @@ pub fn take_monthly_snapshot(
     month: u32,   // YYYYMM
 ) -> SpelResult
 // Logic:
+//   if month <= pool.last_month → return Err(InvalidMonth)  // Finding 13: prevent re-snapshot of past month
 //   if pool.snapshot_month == month → return Err(SnapshotAlreadyTaken)
 //   pool.snapshot_balance            = pool.fee_balance
 //   pool.snapshot_total_active_bytes = pool.total_active_bytes
 //   pool.snapshot_month              = month
+//   pool.last_month                  = month  // advance so next month must be strictly greater
 ```
 
 ---
@@ -758,11 +810,18 @@ pub fn withdraw(
     #[account(signer)]
     user: AccountWithMetadata,
 
+    // destination: user's external stable token wallet; target of ChainedCall
+    #[account(mut)]
+    user_token_account: AccountWithMetadata,
+
+    // stable token program — ChainedCall target (program ID TBD; see Stable Token Transfer section)
+    token_program: AccountWithMetadata,
+
     amount: u128,
 ) -> SpelResult
 // Logic:
 //   if stats.claimable_balance < amount → return Err(InsufficientBalance)
-//   transfer amount stable from pool to user  // ChainedCall to stable token program
+//   ChainedCall to token_program: transfer amount stable from keeper program to user_token_account
 //   stats.claimable_balance -= amount
 ```
 
@@ -1543,13 +1602,14 @@ Account inspection documented in the Content Verification section:
 Both were referenced by name in the Storage Holding Verification section but had no
 instruction definition.
 
-**Resolution applied (v1):** `confirm_reachable` collapsed into `verify_holding` — any
-signer (`verifier`) can submit it for any `preserver`. Positive confirmation (CID reachable)
-uses `verify_holding`; there was originally no path for negative evidence.
+**Resolution applied (v1):** `confirm_reachable` collapsed into `verify_holding`. In v1
+`verify_holding` is **preserver-signed only** (H2 fix — see verify_holding section).
+Positive confirmation is submitted by the preserver itself. There was originally no path
+for negative evidence.
 
 **Extended resolution (market research gap D):** `challenge_holding` added as a distinct
-instruction that handles the negative case. A challenger who asserts a CID is unreachable
-creates a `ChallengeRecord` PDA with a deadline; if the preserver cannot respond with a
+instruction that handles the negative case. Any node can assert a CID is unreachable —
+this creates a `ChallengeRecord` PDA with a deadline; if the preserver cannot respond with a
 valid `verify_holding` before the deadline, `finalize_challenge` sets them Delinquent
 and pays the challenger a bounty from the holding deposit. This gives third-party verifiers
 an economic reason to run audits.
@@ -1635,7 +1695,7 @@ wins by blockchain ordering."
 
 | Gap | Note |
 |-----|------|
-| Proof CID is reachable on network | Verified via `downloadChunks(local=false)` — off-chain, any peer can check and submit `verify_holding` or `challenge_holding` |
+| Proof CID is reachable on network | Verified via `downloadChunks(local=false)` — off-chain, any peer can check; preserver submits `verify_holding` (v1: preserver-signed); any peer can trigger `challenge_holding` |
 | Proof node is *continuously* holding | Preserver can unpin and re-pin just before the deadline — `challenge_holding` creates economic pressure against this |
 | Proof files are authentic IA content | Trust IA's sha1/md5 in metadata; `metadata_hash` anchors the claim at time of preservation |
 | Sybil resistance | Mitigated by `holding_deposit` (economic downside) + `challenge_holding` (active catching) |
@@ -1712,74 +1772,30 @@ Findings from reading `logos-co/spel` v0.4.0 source at `~/basecamp/refs/spel`.
 | Topic | Finding |
 |-------|---------|
 | **Token transfer** | No native primitive. `SpelOutput.chained_calls: Vec<ChainedCall>` is the cross-program call mechanism. Fixture `transfer` instruction is a pure account data mutation. |
-| **Multi-seed PDA** | `pda = [...]` and `pda = arg(...)` are an **open upstream issue** (`spel-framework/issues/1`), not yet in the macro. Only `pda = literal("x")` and `pda = account("name")` (single seed) work today. |
+| **Multi-seed PDA** | `pda = [...]` **confirmed working** per vpavlin (2026-06-01). Workaround A (manual `compute_pda()`) is no longer needed. All multi-seed PDA macro syntax in this doc is correct and implementable as written. |
 | **Seed hashing** | Multi-seeds will combine via `sha256(s1 \|\| s2 \|\| ... \|\| sN)`. Seed types: `literal` → UTF-8 zero-padded to 32 bytes; `account` → 32-byte AccountId; `arg` → serialised bytes zero-padded to 32. |
 | **`#[account_type]` on enums** | Enum helper types (`VerificationStatus`, `ItemStatus`, `DisputeStatus`) must carry `#[account_type]` to appear in `SpelIdl::types` and be resolvable by the IDL BFS scanner. Fixed in this doc. |
 | **SpelError variants** | `AccountAlreadyInitialized` (code 1002), `AccountNotInitialized` (1003), `InsufficientBalance` (1004), `Overflow` (1007), `Unauthorized` (1008), `PdaMismatch` (1009). Domain errors use `SpelError::custom(code, message)` (offset 6000). |
-| **Block number** | NOT injected by runtime. `block_validity_window` constrains tx validity range but does not expose block number inside a handler. Confirmed: keeper doc's trust-based `block_number: u64` parameter is the only option for v1. |
+| **Block number** | NOT injected by runtime (confirmed vpavlin 2026-06-01). `block_validity_window` constrains tx validity range but does not expose block height to handlers. LEZ devs are discussing adding it. Trust-based `block_number: u64` arg is the only v1 option. v2 will use runtime-injected height when available. |
 | **Variable accounts** | `Vec<AccountWithMetadata>` works for rest-style variable-length account lists (confirmed via `batch_update` fixture). `PreserverRegistry` as `Vec<AccountId>` is valid. |
 | **Private PDAs** | Supported via `#[account(init, private_pda, pda = ..., npk = arg("user_npk"))]`. Not used in keeper v1 but available. |
 | **`ProgramContext`** | `ctx: ProgramContext` provides `self_program_id` and `caller_program_id`. Never part of instruction ABI or IDL. Useful for `#[account(owner = self_program_id)]` constraints. |
 
 ### Upstream blockers and workarounds
 
-#### Blocker 1 — Multi-seed PDA (`spel-framework/issues/1`)
+#### Blocker 1 — Multi-seed PDA — **RESOLVED** (2026-06-01)
 
-All PDAs except `pool` and `registry` require multi-seed or `arg()` seed syntax not yet in the macro.
+`pda = [...]` array syntax is **confirmed working** per vpavlin. The SPEL macro supports
+multi-seed PDAs as documented in `spel/docs/reference/macros.md`. All PDA macro syntax
+in this doc is correct and can be implemented as written. **Workaround A is no longer needed.**
 
-**Workaround A — Manual PDA verification in handler body**
+#### Blocker 2 — ChainedCall stable transfer — **PARTIALLY RESOLVED** (2026-06-01)
 
-Remove `pda = ...` from `#[account]`. Declare the account as plain `#[account(init)]` or
-`#[account(mut)]`, then verify the address inside the handler using the already-implemented
-`compute_pda_multi()`:
+**Mechanism confirmed:** `ChainedCall` is the correct path for stable token transfers (confirmed by vpavlin).
+A general token program is deployed on the network. **Program ID is TBD** — awaiting answer
+from r4bbit on the stable token program ID on testnet.
 
-```rust
-use spel_framework_core::pda::{compute_pda, seed_from_str};
-
-#[instruction]
-pub fn register_preservation(
-    #[account(init)]          // ← no pda= constraint; verified manually below
-    pres: AccountWithMetadata,
-    preserver: AccountWithMetadata,
-    ia_id: String,
-    ...
-) -> SpelResult {
-    // AccountId does NOT implement ToSeed — use compute_pda() with raw [u8; 32] refs.
-    // AccountId is a [u8; 32]-compatible type from nssa_core; convert to bytes first.
-    // Exact conversion API TBD from nssa_core docs (likely .as_bytes() or .0).
-    let preserver_bytes: [u8; 32] = preserver.id().into();  // or .as_bytes().try_into()
-    let expected = compute_pda(
-        &ctx.self_program_id,
-        &[&seed_from_str("pres"), &preserver_bytes, &ia_id.to_seed()],
-    );
-    if pres.id() != expected {
-        return Err(SpelError::PdaMismatch { account_name: "pres".into(),
-            expected: format!("{:?}", expected), actual: format!("{:?}", pres.id()) });
-    }
-    // ... rest of handler
-}
-```
-
-> **Note:** `AccountId` does not implement `ToSeed` in the current `spel-framework-core`
-> source. Use `compute_pda()` (takes `&[&[u8; 32]]`) directly, converting `AccountId` to
-> raw bytes first. The exact `AccountId → [u8; 32]` conversion depends on `nssa_core` API —
-> confirm with LEZ devs (likely `.into()` or `.0` for a newtype).
-
-`compute_pda()` and the `sha256(s1 || s2 || ... || sN)` hash scheme are already in
-`spel-framework-core/src/pda.rs`. The macro is the only missing piece. On-chain safety
-is identical to the constrained form — the IDL just won't encode seed metadata, so the
-generated C++ client must compute addresses itself using the same scheme.
-
-**Workaround B — Single-account seed (for `stats` only)**
-
-`stats::{user}` can use `pda = account("user")` (single AccountId seed — works today).
-No literal prefix needed; the program ID already namespaces it. No collision risk because
-`stats` is the only single-account PDA in keeper.
-
-#### Blocker 2 — ChainedCall stable transfer
-
-The `ChainedCall` struct comes from `nssa_core::program` which is not in the local refs.
-Its call format is unknown until LEZ devs document the stable token program.
+**Workaround (still active until program ID confirmed):** Internal ledger model.
 
 **Workaround — Internal ledger model**
 
@@ -1803,16 +1819,12 @@ logic is unaffected.
 
 | Phase | Instructions | Blocker workaround |
 |-------|--------------|--------------------|
-| **1 — Singletons** | `initialize_program`, `fund_pool` | `pool`/`registry` use single-literal seeds — work today; no multi-seed or ChainedCall |
-| **2 — Core flow** | `create_user`, `register_preservation`, `verify_holding`, `claim_monthly_reward`, `deregister_item`, `deregister_user` | Manual PDA verification (Workaround A) + internal ledger (Workaround 2) |
-| **3 — Audit + bounty** | `challenge_holding`, `finalize_challenge`, `create_item_bounty`, `fund_item_bounty`, `claim_item_bounty` | Manual PDA verification (Workaround A) + internal ledger |
-| **4 — Governance** | `open_dispute`, `vote_on_dispute`, `migrate_score` | Manual PDA verification (Workaround A) |
-| **Upgrade A** | Replace manual PDA checks with `pda = [...]` macro constraints | When `spel-framework/issues/1` lands |
-| **Upgrade B** | Replace `withdraw` internal ledger with `ChainedCall` to real stable token | When LEZ stable token API is confirmed |
+| **1 — Singletons** | `initialize_program`, `fund_pool` | No blockers |
+| **2 — Core flow** | `create_user`, `register_preservation`, `verify_holding`, `snapshot_user`, `take_monthly_snapshot`, `claim_monthly_reward`, `deregister_item`, `deregister_user` | Internal ledger workaround (Workaround B) only; multi-seed PDA works natively |
+| **3 — Audit + bounty** | `challenge_holding`, `finalize_challenge`, `create_item_bounty`, `fund_item_bounty`, `claim_item_bounty` | Internal ledger workaround only |
+| **4 — Governance** | `open_dispute`, `vote_on_dispute`, `migrate_score` | No blockers |
+| **Upgrade B** | Replace `withdraw` internal ledger with direct `ChainedCall` transfers in each instruction; remove `withdraw` instruction and `claimable_balance` field | When stable token program ID confirmed (r4bbit) |
 
-> **Correction:** `create_user` uses `[literal("stats"), account("user")]` — a two-seed PDA —
-> so it requires Workaround A. Only `initialize_program` and `fund_pool` are truly
-> blocker-free today (both use single-literal seeds only).
 
 Phase 1 (`initialize_program`, `fund_pool`) can start immediately. Phase 2+ requires the manual PDA verification workaround.
 
