@@ -156,15 +156,21 @@ pagination concern applies — v2 plan: `ChannelEntryPage` shards.
 | Layer | Token | Nature | Source | Use |
 |-------|-------|--------|--------|-----|
 | **Reputation** | `keeper_score` | Soulbound, non-transferable | Earned by preserving items | Leaderboard, dispute voting weight, determines monthly reward **share** |
-| **Economic** | Stable (configurable at deploy) | Transferable, real value | Registration fees + institutional grants | Funds the reward pool; paid out monthly in the same stable |
+| **Economic** | Stable (configurable at deploy) | Transferable, real value | External sources (see below) | Funds the reward pool; paid out monthly in the same stable |
 
 **`keeper_score` is not a financial asset.** It has no price, no market, no transfer. It is a permanent on-chain record of preservation work — like a credit score. It cannot be bought.
 
-**Stable is the only money in the system.** The reward pool is funded by registration fees paid on every `register_preservation` call. Preservers earn stable monthly, proportional to how much data they are actively holding. No entrance deposit required — joining is free.
+**Stable is the only money in the system.** In v1 the reward layer is inactive — preservers earn `keeper_score` only. In v2, stable rewards are enabled and the pool is funded from three external sources:
+
+> **Source 1 — Stake-yield.** Holding deposits are escrowed on-chain, not burned. In v2 they are parked in a low-risk yield-bearing instrument; the yield flows into `pool.fee_balance` while the principal remains fully returnable to the preserver on clean exit. Value is genuinely external — no dilution, no donation dependency.
+>
+> **Source 2 — External funding.** Preservation of public-good archives is exactly what institutions fund. `fund_pool` is a permissionless top-up instruction open to the Internet Archive, university endowments, grants, and individual donors. `fund_item_bounty` lets sponsors target specific collections directly — preservers of that item earn the bounty on top of their monthly pool share.
+>
+> **Source 3 — Challenge forfeitures.** A failed audit slashes the preserver's holding deposit into the pool, with a cure period first (re-prove possession before the forfeit finalises) so the goal stays clean content, not punishment. The successful challenger earns a modest capped bounty — enough to reward the catch; not enough to make hunting failures the business model.
 
 The stable token address is a program constant set at deployment — USDC, a Logos native stable, or any compatible token.
 
-> **Design choice — stable-only, no flywheel token:** DePIN protocols that reward in their own volatile token create boom/bust participation cycles tied to price, not storage quality. ² Keeper deliberately avoids this: rewarding preservers in the same stable they paid is redistribution with no speculation layer — preservation as a public good, not an investment vehicle. This is a stated design decision, not an omission.
+> **Design choice — stable-only, no flywheel token:** DePIN protocols that reward in their own volatile token create boom/bust participation cycles tied to price, not storage quality. ² Keeper deliberately avoids this: all value in the reward pool is externally sourced stable — no speculation layer, no reflexive tokenomics. Preservation as a public good, not an investment vehicle. This is a stated design decision, not an omission.
 
 > **v2 — Dispute stake:** A voluntary stable stake will be introduced for dispute participation. Preservers who want to challenge or defend canonical records will lock stable as collateral; the loser forfeits a portion to the winner. `keeper_score` is never at risk — only the voluntary dispute stake.
 
@@ -1211,14 +1217,15 @@ others to fill the gap. The pool self-balances.
   PDAs and are distributed as an additional top-up to preservers of that item.
 
 **Cold start / bootstrap strategy:** ¹ Most DePIN protocols that failed died here.
-Before enough registration fees accumulate, `reward_per_byte ≈ 0` — no preserver
-joins for zero reward, killing the fee flywheel. Mitigation:
+A fresh pool has `reward_per_byte ≈ 0` — no preserver joins for zero reward.
+The three v2 funding sources (stake-yield, external funding, challenge forfeitures) only flow
+once there are preservers; the pool must be seeded externally before the first preserver joins. Mitigation:
 
 | Phase | Mechanism |
 |-------|-----------|
 | Genesis | Project team or early sponsors call `fund_pool` with a committed minimum seed (recommend ≥ 6 months of estimated rewards at target participation) |
 | Month 1–6 | Internet Archive (or Logos) calls `fund_pool` monthly on a public schedule — predictable reward for early preservers |
-| Month 7+ | Registration fees self-sustain if ≥ N active preservers; foundation role shrinks to emergency top-up |
+| Month 7+ | Stake-yield + challenge forfeitures begin to self-fund; external `fund_pool` role shrinks to emergency top-up |
 
 The foundation commitment should be documented off-chain (grant agreement, public pledge)
 before the protocol launches — `fund_pool` is the on-chain execution of that commitment.
@@ -1791,7 +1798,7 @@ See Research Footnotes for sources.
 | **E** — `PreserverRegistry` grows forever; ghost accounts | Medium | Resolved | `deregister_user` zeroes active_bytes, sets `is_deregistered`; leaderboard filters flag |
 | **F** — Soulbound score lost on key compromise | Medium | Resolved | `migrate_score` — dual-signed migration; transfers score/history, not `active_bytes`; new identity re-registers per item |
 | **G** — No demand side; sponsors cannot express preference | Medium | Resolved | `create_item_bounty` + `fund_item_bounty` + `claim_item_bounty`; per-item bounty claimable monthly |
-| **H** — No deflationary flywheel | Low | By design | Stable-only redistribution is an explicit choice; documented in Dual Token Model |
+| **H** — No deflationary flywheel | Low | By design | Closed-loop redistribution is an explicit non-goal; v2 pool funded by three external sources (stake-yield, external funding, challenge forfeitures) — documented in Dual Token Model |
 
 ---
 
