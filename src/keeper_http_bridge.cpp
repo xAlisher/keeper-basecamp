@@ -60,12 +60,17 @@ bool KeeperHttpBridge::listen(quint16 port)
 QHttpServerResponse KeeperHttpBridge::handlePreserve(const QHttpServerRequest& req)
 {
     QJsonObject body = QJsonDocument::fromJson(req.body()).object();
-    QString url = body.value("url").toString();
-    if (url.isEmpty()) {
-        return jsonErr(R"({"success":false,"error":"missing 'url' field"})");
+
+    QString errMsg;
+    if (!plugin_->verifyPreserveRequest(body, errMsg)) {
+        QJsonObject errObj;
+        errObj["success"] = false;
+        errObj["error"]   = errMsg;
+        return jsonErr(QJsonDocument(errObj).toJson(QJsonDocument::Compact),
+                       QHttpServerResponse::StatusCode::Unauthorized);
     }
 
-    QString result = plugin_->preserveItem(url);
+    QString result = plugin_->preserveItem(body.value("url").toString());
     auto resp = jsonOk(result.toUtf8());
     addCors(resp);
     return resp;

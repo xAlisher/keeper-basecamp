@@ -7,6 +7,7 @@
 #include <QNetworkReply>
 #include <QFile>
 #include <QTimer>
+#include <QHash>
 
 #include "keeper_interface.h"
 #include "keeper_http_bridge.h"
@@ -57,6 +58,15 @@ public:
     Q_INVOKABLE QString getInscriptionQueue() const;
     Q_INVOKABLE QString markInscribed(const QString& cid);
 
+    // Paired-extension management (called from QML settings panel)
+    Q_INVOKABLE QString addPairedExtension(const QString& hexPubkey);
+    Q_INVOKABLE QString removePairedExtension(const QString& hexPubkey);
+    Q_INVOKABLE QString getPairedExtensions() const;
+
+    // Called by KeeperHttpBridge before acting on a preserve request.
+    // Returns true if the request is authentic; false + outError on rejection.
+    bool verifyPreserveRequest(const QJsonObject& msg, QString& outError);
+
 signals:
     void eventResponse(const QString& name, const QVariantList& data);
 
@@ -80,6 +90,9 @@ private:
     void saveInscriptionQueue();
     void appendLog(const KeeperItem& item);
     QString persistPath(const QString& filename);
+    void loadPairedExtensions();
+    void savePairedExtensions();
+    void pruneNonceCache();
 
     // State
     void emitEvent(const QString& name, const QVariantList& data);
@@ -102,6 +115,11 @@ private:
     // Config
     int  maxFilesPerItem_    = 20;
     bool skipDerivatives_    = true;
+
+    // Paired extensions — Ed25519 pubkeys (64 hex chars each) authorised to submit requests
+    QStringList             m_pairedPubkeys;
+    // Nonce cache — sig (base64) → unix-second when first seen; pruned after 120 s
+    QHash<QString, qint64>  m_usedNonces;
 
     QString m_persistencePath;
 };

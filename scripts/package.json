@@ -1,0 +1,7 @@
+{
+  "name": "keeper-debug-scripts",
+  "type": "module",
+  "dependencies": {
+    "@waku/sdk": "0.0.36"
+  }
+}

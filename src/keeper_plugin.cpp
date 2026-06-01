@@ -9,6 +9,9 @@
 #include <QStandardPaths>
 #include <QNetworkRequest>
 #include <QUrl>
+#include <QDateTime>
+
+#include <sodium.h>
 
 
 // ── Lifecycle ────────────────────────────────────────────────────────────────
@@ -31,6 +34,7 @@ void KeeperPlugin::initLogos(LogosAPI* api)
     QDir().mkpath(m_persistencePath);
 
     loadQueue();
+    loadPairedExtensions();
 
     // Start HTTP bridge for the Chrome extension (localhost:7355)
     httpBridge_ = new KeeperHttpBridge(this, this);
@@ -187,6 +191,165 @@ QString KeeperPlugin::markInscribed(const QString& cid)
     inscriptionQueue_.removeIf([&](const QJsonObject& e){ return e["cid"].toString() == cid; });
     saveInscriptionQueue();
     return R"({"ok":true})";
+}
+
+// ── Paired-extension management ───────────────────────────────────────────────
+
+QString KeeperPlugin::addPairedExtension(const QString& hexPubkey)
+{
+    // Must be exactly 64 hex chars (32-byte Ed25519 public key)
+    if (hexPubkey.length() != 64 ||
+        !QRegularExpression("^[0-9a-fA-F]{64}$").match(hexPubkey).hasMatch()) {
+        return R"({"success":false,"error":"pubkey must be 64 hex characters"})";
+    }
+    QString normalized = hexPubkey.toLower();
+    if (m_pairedPubkeys.contains(normalized))
+        return R"({"success":false,"error":"already paired"})";
+    m_pairedPubkeys.append(normalized);
+    savePairedExtensions();
+    qDebug() << "KeeperPlugin: paired extension" << normalized.left(16) << "...";
+    return R"({"success":true})";
+}
+
+QString KeeperPlugin::removePairedExtension(const QString& hexPubkey)
+{
+    QString normalized = hexPubkey.toLower();
+    if (!m_pairedPubkeys.removeOne(normalized))
+        return R"({"success":false,"error":"not found"})";
+    savePairedExtensions();
+    qDebug() << "KeeperPlugin: unpaired extension" << normalized.left(16) << "...";
+    return R"({"success":true})";
+}
+
+QString KeeperPlugin::getPairedExtensions() const
+{
+    QJsonArray arr;
+    for (const QString& pk : m_pairedPubkeys)
+        arr.append(pk);
+    return QJsonDocument(arr).toJson(QJsonDocument::Compact);
+}
+
+// ── Request verification ──────────────────────────────────────────────────────
+
+bool KeeperPlugin::verifyPreserveRequest(const QJsonObject& msg, QString& outError)
+{
+    // 1. Required fields
+    static const QStringList required = {"action", "identifier", "url", "timestamp", "pubkey", "sig"};
+    for (const QString& field : required) {
+        if (!msg.contains(field)) {
+            outError = "missing field: " + field;
+            return false;
+        }
+    }
+
+    const QString action     = msg["action"].toString();
+    const QString identifier = msg["identifier"].toString();
+    const QString url        = msg["url"].toString();
+    const qint64  ts         = msg["timestamp"].toInteger();
+    const QString pubkey     = msg["pubkey"].toString().toLower();
+    const QString sig        = msg["sig"].toString();
+
+    if (action != "preserve") {
+        outError = "unknown action";
+        return false;
+    }
+
+    // 2. Pubkey format: exactly 64 hex chars (32 bytes)
+    if (pubkey.length() != 64) {
+        outError = "invalid pubkey";
+        return false;
+    }
+
+    // 3. Pubkey must be in the paired list
+    if (!m_pairedPubkeys.contains(pubkey)) {
+        qDebug() << "KeeperPlugin: rejected — unknown pubkey" << pubkey.left(16) << "...";
+        outError = "unauthorized";
+        return false;
+    }
+
+    // 4. Timestamp freshness (±60 s)
+    const qint64 now = QDateTime::currentSecsSinceEpoch();
+    if (qAbs(now - ts) > 60) {
+        qDebug() << "KeeperPlugin: rejected — stale timestamp, delta=" << (now - ts) << "s";
+        outError = "stale timestamp";
+        return false;
+    }
+
+    // 5. Replay: same sig must not have been used before
+    pruneNonceCache();
+    if (m_usedNonces.contains(sig)) {
+        qDebug() << "KeeperPlugin: rejected — replay detected for" << identifier;
+        outError = "replay detected";
+        return false;
+    }
+
+    // 6. Ed25519 signature — canonical message matches JS JSON.stringify key order
+    QJsonObject canonical;
+    canonical["action"]     = action;
+    canonical["identifier"] = identifier;
+    canonical["url"]        = url;
+    canonical["timestamp"]  = ts;
+    canonical["pubkey"]     = pubkey;
+    const QByteArray message    = QJsonDocument(canonical).toJson(QJsonDocument::Compact);
+    const QByteArray pubkeyBytes = QByteArray::fromHex(pubkey.toUtf8());
+    const QByteArray sigBytes    = QByteArray::fromBase64(sig.toUtf8());
+
+    if (pubkeyBytes.size() != crypto_sign_PUBLICKEYBYTES ||
+        sigBytes.size()    != crypto_sign_BYTES) {
+        outError = "malformed key or signature";
+        return false;
+    }
+
+    if (crypto_sign_verify_detached(
+            reinterpret_cast<const unsigned char*>(sigBytes.constData()),
+            reinterpret_cast<const unsigned char*>(message.constData()),
+            static_cast<unsigned long long>(message.size()),
+            reinterpret_cast<const unsigned char*>(pubkeyBytes.constData())) != 0) {
+        qDebug() << "KeeperPlugin: rejected — bad signature for" << identifier;
+        outError = "invalid signature";
+        return false;
+    }
+
+    m_usedNonces[sig] = now;
+    qDebug() << "KeeperPlugin: verified preserve request for" << identifier
+             << "from pubkey" << pubkey.left(16) << "...";
+    return true;
+}
+
+void KeeperPlugin::pruneNonceCache()
+{
+    const qint64 cutoff = QDateTime::currentSecsSinceEpoch() - 120;
+    for (auto it = m_usedNonces.begin(); it != m_usedNonces.end(); ) {
+        if (it.value() < cutoff)
+            it = m_usedNonces.erase(it);
+        else
+            ++it;
+    }
+}
+
+// ── Paired-extension persistence ──────────────────────────────────────────────
+
+void KeeperPlugin::loadPairedExtensions()
+{
+    QFile f(persistPath("keeper-paired-extensions.json"));
+    if (!f.open(QIODevice::ReadOnly)) return;
+    QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+    if (!doc.isArray()) return;
+    for (const auto& v : doc.array()) {
+        QString pk = v.toString().toLower();
+        if (pk.length() == 64 && !m_pairedPubkeys.contains(pk))
+            m_pairedPubkeys.append(pk);
+    }
+    qDebug() << "KeeperPlugin: loaded" << m_pairedPubkeys.size() << "paired extension(s)";
+}
+
+void KeeperPlugin::savePairedExtensions()
+{
+    QJsonArray arr;
+    for (const QString& pk : m_pairedPubkeys) arr.append(pk);
+    QFile f(persistPath("keeper-paired-extensions.json"));
+    if (f.open(QIODevice::WriteOnly))
+        f.write(QJsonDocument(arr).toJson(QJsonDocument::Compact));
 }
 
 QString KeeperPlugin::getConfig()

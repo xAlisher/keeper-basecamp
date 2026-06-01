@@ -3,3 +3,5 @@ result-*
 build/
 *.o
 *.a
+scripts/keypair.json
+scripts/node_modules/
