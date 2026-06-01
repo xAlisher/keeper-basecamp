@@ -18,8 +18,9 @@ User preserves IA item:
   → Stash uploads to IPFS → collection CID
   → keeper_protocol::register_preservation(ia_id, cid, hashes, ...)
       → pays registration_fee stable → RewardPool.fee_balance
+      → escrows holding_deposit_amount stable (returned on deregister_item; forfeited on failed challenge)
       → ItemRecord PDA (first-write atomic — first preserver wins)
-      → PreservationRecord PDA (per-user per-item)
+      → PreservationRecord PDA (per-user per-item; status = Pending)
       → UserStats.keeper_score incremented (soulbound, leaderboard only)
 
 Every 7 days per item:
@@ -43,9 +44,11 @@ At any time (institutions / foundation):
       → open to anyone: Logos Foundation, Internet Archive, donors, grants
 
 At any time (sponsors / institutions):
-  → keeper_protocol::sponsor_preservation(ia_id, amount)
+  → keeper_protocol::create_item_bounty(ia_id)      ← first time only
+  → keeper_protocol::fund_item_bounty(ia_id, amount)
       → stable added to SponsorBounty PDA for that specific item
-      → distributed pro-rata to active preservers of that item at claim time
+  → preserver calls keeper_protocol::claim_item_bounty(ia_id, month)
+      → pro-rata payout by record.total_bytes / item.total_active_bytes
 
 At any time (any node — challenge-response audit):
   → keeper_protocol::challenge_holding(ia_id, preserver)
@@ -96,6 +99,8 @@ pub struct ItemRecord {
     pub block:                    u64,
     pub file_count:               u32,
     pub total_bytes:              u64,
+    pub total_active_bytes:       u64,  // sum of total_bytes across Active preservers of this item
+                                        // maintained by verify_holding; used in per-item bounty distribution
 }
 
 pub enum ItemStatus {
@@ -117,12 +122,20 @@ pub struct PreservationRecord {
     pub collection_cid:    [u8; 32],
     pub metadata_hash:     [u8; 32],
     pub merkle_root:       [u8; 32],
-    pub matches_canonical: bool,
-    pub block:             u64,
-    pub file_count:        u32,
-    pub total_bytes:       u64,
-    pub holding_deposit:   u128,   // stable escrowed at registration; returned by deregister_user
-                                   // forfeited to pool if chronically Delinquent (> SLASH_THRESHOLD)
+    pub matches_canonical:    bool,
+    pub block:                u64,
+    pub file_count:           u32,
+    pub total_bytes:          u64,
+    pub holding_deposit:      u128,  // stable escrowed at registration; returned by deregister_item
+                                     // forfeited to pool if chronically Delinquent
+    pub last_verified_block:  u64,
+    pub verification_status:  VerificationStatus,
+}
+
+pub enum VerificationStatus {
+    Pending,    // min_hold_blocks not yet elapsed — no reward contribution
+    Active,     // holding confirmed within DELINQUENCY_THRESHOLD — contributes to active_bytes
+    Delinquent, // gap exceeded — removed from active_bytes until re-verified
 }
 ```
 
@@ -163,6 +176,7 @@ pub struct UserStats {
     pub keeper_score:          u128,   // soulbound — accumulates forever, leaderboard only
     pub active_bytes:          u64,    // bytes currently held Active — drives reward share
     pub last_block:            u64,
+    pub is_deregistered:       bool,   // set by deregister_user; leaderboard enumeration skips this flag
 }
 ```
 
@@ -177,10 +191,12 @@ pub struct RewardPool {
     pub total_active_bytes:     u128,   // sum of active_bytes across all preservers
     pub registration_fee:       u128,   // stable charged per register_preservation call (into fee_balance)
     pub holding_deposit_amount: u128,   // stable escrowed per item (returned on deregister, slashed on chronic delinquency)
-    pub max_user_share_bp:      u32,    // basis points cap per user, e.g. 2000 = 20%
-    pub min_hold_blocks:        u64,    // blocks an item must be held before Active
-    pub challenge_bounty_bp:    u32,    // basis points of next monthly reward paid to successful challenger
-    pub last_month:             u32,    // last YYYYMM distributed
+    pub max_user_share_bp:           u32,    // basis points cap per user, e.g. 2000 = 20%
+    pub min_hold_blocks:             u64,    // blocks an item must be held before Active
+    pub challenge_bounty_bp:         u32,    // % of holding_deposit paid to successful challenger
+    pub challenge_response_window:   u64,    // blocks preserver has to respond to a challenge
+    pub challenge_spam_fee:          u128,   // stable challenger must lock (lost if wrong)
+    pub last_month:                  u32,    // last YYYYMM distributed
 }
 ```
 
@@ -222,7 +238,7 @@ pub struct ChallengeRecord {
     pub preserver:         AccountId,
     pub challenger:        AccountId,
     pub challenge_block:   u64,
-    pub deadline_block:    u64,    // challenge_block + CHALLENGE_RESPONSE_WINDOW
+    pub deadline_block:    u64,    // challenge_block + pool.challenge_response_window
     pub resolved:          bool,
     pub preserver_cleared: bool,   // true = preserver responded; false = delinquent
 }
@@ -231,7 +247,7 @@ pub struct ChallengeRecord {
 ### `SponsorBounty`
 One per `ia_id`. Any party can deposit stable to sponsor preservation of a specific item.
 Preservers of that item claim a pro-rata share of the bounty on top of the normal monthly
-pool reward, funded by `sponsor_preservation`. ⁴
+pool reward, funded by `fund_item_bounty`. ⁴
 
 ```rust
 #[account_type]
@@ -453,7 +469,7 @@ and increase next month's budget. The pool never distributes more than its curre
 
 Any node can challenge a preserver's claimed holding. The challenger asserts (off-chain
 verified) that the preserver's CID is unreachable on the Logos Storage network.
-The preserver then has `CHALLENGE_RESPONSE_WINDOW` blocks to submit a successful
+The preserver then has `pool.challenge_response_window` blocks to submit a successful
 `verify_holding` — proving the CID is reachable — or be immediately set Delinquent
 and lose their holding deposit. Challengers who are wrong lose their anti-spam fee
 to the pool. ³
@@ -480,13 +496,13 @@ pub fn challenge_holding(
     block_number: u64,
 ) -> SpelResult
 // Logic:
-//   transfer CHALLENGE_SPAM_FEE stable from challenger to pool (anti-spam)
-//   challenge.ia_id           = ia_id
-//   challenge.preserver       = preserver.account_id
-//   challenge.challenger      = challenger.account_id
-//   challenge.challenge_block = block_number
-//   challenge.deadline_block  = block_number + CHALLENGE_RESPONSE_WINDOW
-//   challenge.resolved        = false
+//   transfer pool.challenge_spam_fee stable from challenger to pool (anti-spam; lost if challenger is wrong)
+//   challenge.ia_id             = ia_id
+//   challenge.preserver         = preserver.account_id
+//   challenge.challenger        = challenger.account_id
+//   challenge.challenge_block   = block_number
+//   challenge.deadline_block    = block_number + pool.challenge_response_window
+//   challenge.resolved          = false
 //   challenge.preserver_cleared = false
 ```
 
@@ -574,18 +590,38 @@ next claim cycle.
 
 ---
 
-### `sponsor_preservation`
+### `create_item_bounty`
+
+Creates the `SponsorBounty` PDA for a specific IA item. Must be called once before
+`fund_item_bounty`. Analogous to how `create_user` precedes `register_preservation`. ⁴
+
+```rust
+#[instruction]
+pub fn create_item_bounty(
+    #[account(init, pda = [literal("bounty"), arg("ia_id")])]
+    bounty: AccountWithMetadata,
+
+    #[account(signer)]
+    sponsor: AccountWithMetadata,
+
+    ia_id: String,
+) -> SpelResult
+// Logic: bounty.ia_id = ia_id; bounty.balance = 0; bounty.block = block_number
+```
+
+---
+
+### `fund_item_bounty`
 
 Demand-side entry point. Any party — Internet Archive, a library, a private collector —
 can deposit stable to specifically incentivise preservation of one IA item. The bounty
-is paid out pro-rata to all active preservers of that item at claim time, on top of
-their normal monthly pool reward. This creates a two-sided marketplace: preservers
+is paid out pro-rata to active preservers of that item via `claim_item_bounty`, on top
+of their normal monthly pool reward. This creates a two-sided marketplace: preservers
 self-select supply; sponsors express demand economically. ⁴
 
 ```rust
 #[instruction]
-pub fn sponsor_preservation(
-    // creates bounty PDA on first call; subsequent calls add to balance
+pub fn fund_item_bounty(
     #[account(mut, pda = [literal("bounty"), arg("ia_id")])]
     bounty: AccountWithMetadata,
 
@@ -601,13 +637,44 @@ pub fn sponsor_preservation(
 //   bounty.block    = block_number
 ```
 
-Bounty payouts are distributed at `claim_monthly_reward` time:
+---
+
+### `claim_item_bounty`
+
+Called once per month per user per sponsored item. Distributes the item's bounty
+pro-rata by each preserver's contribution to that item's active storage. ⁴
+
+```rust
+#[instruction]
+pub fn claim_item_bounty(
+    #[account(mut, pda = [literal("bounty"), arg("ia_id")])]
+    bounty: AccountWithMetadata,
+
+    #[account(signer)]
+    user: AccountWithMetadata,
+
+    // user's preservation record for this item — must be Active
+    #[account(pda = [literal("pres"), account("user"), arg("ia_id")])]
+    record: AccountWithMetadata,
+
+    // item — provides total_active_bytes denominator
+    #[account(mut, pda = [literal("item"), arg("ia_id")])]
+    item: AccountWithMetadata,
+
+    ia_id:  String,
+    month:  u32,    // YYYYMM — prevents double-claiming same month
+) -> SpelResult
+// Logic:
+//   if record.verification_status != Active → return Err(NotActive)
+//   if bounty.balance == 0 → return Err(NoBalance)
+//   if item.total_active_bytes == 0 → return Err(NoActiveStorage)
+//   raw_payout   = bounty.balance × record.total_bytes / item.total_active_bytes
+//   transfer raw_payout stable from bounty to user
+//   bounty.balance -= raw_payout
 ```
-per_preserver_bounty = bounty.balance × (user.active_bytes_for_item / item.total_active_bytes)
-```
-The bounty balance decrements by the distributed amount each month. If no active preservers
-hold the item, the bounty accumulates indefinitely until someone preserves it — a stronger
-incentive signal over time.
+
+If no active preservers hold the item, the bounty accumulates indefinitely — a growing
+incentive signal that attracts new preservers to that specific collection.
 
 ---
 
@@ -645,11 +712,47 @@ pub fn deregister_user(
 
 ---
 
+### `deregister_item`
+
+Returns the holding deposit for one registered item and marks it inactive.
+Called once per item when a preserver exits. Calling `deregister_user` first is
+recommended to immediately zero `active_bytes` at the stats level; `deregister_item`
+then handles the per-item deposit refunds one at a time.
+
+```rust
+#[instruction]
+pub fn deregister_item(
+    #[account(mut, pda = [literal("pres"), account("user"), arg("ia_id")])]
+    record: AccountWithMetadata,
+
+    #[account(mut, pda = [literal("item"), arg("ia_id")])]
+    item: AccountWithMetadata,
+
+    #[account(mut, pda = [literal("pool")])]
+    pool: AccountWithMetadata,
+
+    #[account(signer)]
+    user: AccountWithMetadata,
+
+    ia_id: String,
+) -> SpelResult
+// Logic:
+//   if record.verification_status == Active:
+//     item.total_active_bytes -= record.total_bytes   // update per-item counter
+//   deposit = record.holding_deposit
+//   transfer deposit stable from pool to user
+//   record.holding_deposit      = 0
+//   record.verification_status  = Delinquent          // item no longer maintained
+```
+
+---
+
 ### `migrate_score`
 
 Transfers `keeper_score` and preservation stats to a new account (key rotation or
 wallet recovery). Both the old and new accounts must sign — the old to authorise the
-migration, the new to accept. ⁶
+migration, the new to accept. The new user must call `create_user` first to initialise
+`new_stats` before calling `migrate_score`. ⁶
 
 ```rust
 #[instruction]
@@ -657,7 +760,8 @@ pub fn migrate_score(
     #[account(mut, pda = [literal("stats"), account("old_user")])]
     old_stats: AccountWithMetadata,
 
-    #[account(init, pda = [literal("stats"), account("new_user")])]
+    // new_user must have called create_user first — new_stats must already exist
+    #[account(mut, pda = [literal("stats"), account("new_user")])]
     new_stats: AccountWithMetadata,
 
     #[account(mut, pda = [literal("registry")])]
@@ -748,7 +852,7 @@ others to fill the gap. The pool self-balances.
 - **Institutional grants** — `fund_pool` accepts any stable transfer from any party.
   Logos Foundation, Internet Archive, or grant programs can top up the pool directly
   at any time. No membership required — just a signed transaction.
-- **Item bounties** — `sponsor_preservation` deposits accumulate in per-item `SponsorBounty`
+- **Item bounties** — `fund_item_bounty` deposits accumulate in per-item `SponsorBounty`
   PDAs and are distributed as an additional top-up to preservers of that item.
 
 **Cold start / bootstrap strategy:** ¹ Most DePIN protocols that failed died here.
@@ -940,25 +1044,15 @@ pub fn verify_holding(
     // if prev_status != Active AND new_status == Active:
     //   stats.active_bytes          += record.total_bytes
     //   pool.total_active_bytes     += record.total_bytes
+    //   item.total_active_bytes     += record.total_bytes   // per-item counter for bounty distribution
     //
     // if prev_status == Active AND new_status != Active:
     //   stats.active_bytes          -= record.total_bytes
     //   pool.total_active_bytes     -= record.total_bytes
+    //   item.total_active_bytes     -= record.total_bytes
     //
     // record.verification_status = new_status
 }
-```
-
-Add to `PreservationRecord`:
-
-```rust
-pub last_verified_block: u64,
-pub verification_status: VerificationStatus,
-
-pub enum VerificationStatus { Pending, Active, Delinquent }
-// Pending: item registered but min_hold_blocks not yet elapsed — no reward contribution
-// Active:  holding confirmed within DELINQUENCY_THRESHOLD — contributes to active_bytes
-// Delinquent: gap exceeded — removed from active_bytes until re-verified
 ```
 
 ### Self-verification (Keeper, runs on a timer)
@@ -1145,7 +1239,7 @@ C++ bindings for all instructions directly from the IDL — no hand-written IPC 
 | Monthly stable reward | `claim_monthly_reward` transfers stable pro-rata by active_bytes; hard cap per user |
 | Holding accountability | Per-item `holding_deposit` escrowed; forfeited via `finalize_challenge` if preserver fails challenge |
 | Third-party audit incentive | `challenge_holding` + `finalize_challenge` — challenger earns bounty for catching delinquent node |
-| Demand-side sponsorship | `sponsor_preservation` — sponsors pay extra to prioritise specific items; two-sided market |
+| Demand-side sponsorship | `create_item_bounty` + `fund_item_bounty` + `claim_item_bounty` — sponsors target specific items; two-sided market |
 | Clean exit | `deregister_user` + `deregister_item` — returns deposits, zeroes active_bytes, history preserved |
 | Score recovery | `migrate_score` — dual-signed key migration; soulbound score survives wallet compromise |
 | Suspicion detection | Logic inside `register_preservation` — pure zkVM arithmetic |
@@ -1235,11 +1329,16 @@ Account inspection documented in the Content Verification section:
 Both were referenced by name in the Storage Holding Verification section but had no
 instruction definition.
 
-**Resolution applied:** collapsed into `verify_holding`. The instruction now accepts
-any signer (`verifier`) separate from the `preserver` account being verified. Self-
-and community-verification are the same instruction — no separate `confirm_reachable`
-or `challenge_holding` needed. If a community peer's fetch fails they simply do not
-submit; non-submission naturally accumulates toward the delinquency threshold.
+**Resolution applied (v1):** `confirm_reachable` collapsed into `verify_holding` — any
+signer (`verifier`) can submit it for any `preserver`. Positive confirmation (CID reachable)
+uses `verify_holding`; there was originally no path for negative evidence.
+
+**Extended resolution (market research gap D):** `challenge_holding` added as a distinct
+instruction that handles the negative case. A challenger who asserts a CID is unreachable
+creates a `ChallengeRecord` PDA with a deadline; if the preserver cannot respond with a
+valid `verify_holding` before the deadline, `finalize_challenge` sets them Delinquent
+and pays the challenger a bounty from the holding deposit. This gives third-party verifiers
+an economic reason to run audits.
 
 ---
 
@@ -1337,7 +1436,7 @@ See Research Footnotes for sources.
 | **D** — Third-party verifier has no economic incentive | Medium | Resolved | `challenge_holding` pays `challenge_bounty_bp` of holding deposit to successful challenger |
 | **E** — `PreserverRegistry` grows forever; ghost accounts | Medium | Resolved | `deregister_user` zeroes active_bytes, sets `is_deregistered`; leaderboard filters flag |
 | **F** — Soulbound score lost on key compromise | Medium | Resolved | `migrate_score` — dual-signed migration; old identity retired, new identity carries full history |
-| **G** — No demand side; sponsors cannot express preference | Medium | Resolved | `sponsor_preservation` + `SponsorBounty` PDA; per-item bounty distributed monthly to preservers |
+| **G** — No demand side; sponsors cannot express preference | Medium | Resolved | `create_item_bounty` + `fund_item_bounty` + `claim_item_bounty`; per-item bounty claimable monthly |
 | **H** — No deflationary flywheel | Low | By design | Stable-only redistribution is an explicit choice; documented in Dual Token Model |
 
 ---
@@ -1352,7 +1451,7 @@ See Research Footnotes for sources.
 | **Reward currency** | Stable (no volatility risk) | FIL (volatile) | AR (volatile) | STORJ (volatile) |
 | **Joining cost** | Free (holding deposit only) | High collateral + hardware | None (read-only) | Node setup cost |
 | **Soulbound reputation** | Yes — `keeper_score` permanent, unkillable | No | No | No |
-| **Demand-side sponsorship** | Yes — `sponsor_preservation` per-item bounty | Via storage deals | Via endowment | Not applicable |
+| **Demand-side sponsorship** | Yes — `fund_item_bounty` per-item bounty | Via storage deals | Via endowment | Not applicable |
 | **Institutional top-up** | Yes — `fund_pool` permissionless | No direct equivalent | Foundation grants (off-chain) | VC-funded company |
 | **Score recovery** | Yes — `migrate_score` dual-signed | N/A | N/A | N/A |
 | **Leaderboard on-chain** | Yes — `PreserverRegistry` + `UserStats` | No | No | No |
@@ -1375,7 +1474,7 @@ See Research Footnotes for sources.
 
 2. **Soulbound reputation that cannot be bought** — `keeper_score` is earned only through preservation work and transfers with the person (via `migrate_score`), not the wallet. No competitor has a non-financial on-chain reputation layer tied to storage behaviour.
 
-3. **Two-sided market at the item level** — `sponsor_preservation` lets Internet Archive, libraries, or individuals pay to prioritise specific collections. No other storage protocol expresses demand at the content identity level — they work at the byte or sector level only.
+3. **Two-sided market at the item level** — `fund_item_bounty` lets Internet Archive, libraries, or individuals pay to prioritise specific collections. No other storage protocol expresses demand at the content identity level — they work at the byte or sector level only.
 
 4. **Free entry with skin in the game** — The holding deposit model provides economic accountability without an entrance barrier. Filecoin requires significant upfront collateral. Keeper requires only the deposit for items you actually register, refundable on clean exit.
 
