@@ -18,9 +18,12 @@ Item {
     readonly property color borderColor:   "#383838"
 
     // ── State ─────────────────────────────────────────────────────────────
-    property bool   pollBusy:       false
-    property bool   bridgeRunning:  false
-    property int    bridgePort:     7355
+    property bool   pollBusy:         false
+    property bool   bridgeRunning:    false
+    property int    bridgePort:       7355
+    property bool   pairingExpanded:  false
+    property int    pairedCount:      0
+    property string addFeedback:      ""
 
     // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -65,6 +68,21 @@ Item {
         if (status === "cancelled") return root.textMuted
         if (status === "active")    return root.accentOrange
         return root.textSecondary
+    }
+
+    function refreshPaired() {
+        if (typeof logos === "undefined" || !logos.callModule) return
+        var raw = callModuleParse(logos.callModule("keeper", "getPairedExtensions", []))
+        if (!Array.isArray(raw)) return
+        pairedModel.clear()
+        for (var i = 0; i < raw.length; i++) {
+            var pk = raw[i]
+            pairedModel.append({
+                fullKey:  pk,
+                shortKey: pk.slice(0, 16) + "…" + pk.slice(-4)
+            })
+        }
+        root.pairedCount = raw.length
     }
 
     function refresh() {
@@ -135,6 +153,7 @@ Item {
             }
         }
 
+        refreshPaired()
         root.pollBusy = false
     }
 
@@ -145,6 +164,12 @@ Item {
         running: true
         repeat: true
         onTriggered: root.refresh()
+    }
+
+    Timer {
+        id: feedbackTimer
+        interval: 2500
+        onTriggered: root.addFeedback = ""
     }
 
     Component.onCompleted: root.refresh()
@@ -279,6 +304,208 @@ Item {
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
                     onClicked: keepBtn.doKeep()
+                }
+            }
+        }
+
+        // ── Paired Extensions ─────────────────────────────────────────────────
+        ColumnLayout {
+            Layout.fillWidth: true
+            spacing: 6
+
+            // Header row — always visible
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+
+                Text {
+                    text: "Paired Extensions"
+                    font.pixelSize: 13
+                    font.bold: true
+                    color: root.textPrimary
+                }
+
+                Text {
+                    visible: root.pairedCount > 0
+                    text: "(" + root.pairedCount + ")"
+                    font.pixelSize: 11
+                    color: root.textMuted
+                }
+
+                Item { Layout.fillWidth: true }
+
+                Text {
+                    text: root.pairingExpanded ? "▲" : "▼"
+                    font.pixelSize: 10
+                    color: pairingToggleArea.containsMouse ? root.textSecondary : root.textMuted
+
+                    MouseArea {
+                        id: pairingToggleArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            root.pairingExpanded = !root.pairingExpanded
+                            if (root.pairingExpanded) root.refreshPaired()
+                        }
+                    }
+                }
+            }
+
+            // Collapsible body — implicitHeight collapses cleanly in ColumnLayout
+            Item {
+                Layout.fillWidth: true
+                implicitHeight: root.pairingExpanded ? pairingBody.implicitHeight : 0
+                clip: true
+
+                ColumnLayout {
+                    id: pairingBody
+                    width: parent.width
+                    spacing: 6
+
+                    // Add row
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+
+                        Rectangle {
+                            Layout.fillWidth: true
+                            height: 32
+                            radius: 6
+                            color: root.bgSecondary
+                            border.color: pubkeyField.activeFocus ? root.accentOrange : root.borderColor
+                            border.width: 1
+
+                            TextField {
+                                id: pubkeyField
+                                anchors.fill: parent
+                                anchors.margins: 4
+                                background: null
+                                color: root.textPrimary
+                                font.pixelSize: 11
+                                font.family: "monospace"
+                                placeholderText: "64-char hex pubkey — copy from extension popup"
+                                placeholderTextColor: root.textMuted
+                                onAccepted: addPairedBtn.doAdd()
+                            }
+                        }
+
+                        Rectangle {
+                            id: addPairedBtn
+                            width: 48; height: 32
+                            radius: 6
+                            color: addPairedArea.containsMouse ? "#CC4000" : root.accentOrange
+
+                            function doAdd() {
+                                if (typeof logos === "undefined" || !logos.callModule) return
+                                var pk = pubkeyField.text.trim()
+                                if (!pk) return
+                                var res = callModuleParse(
+                                    logos.callModule("keeper", "addPairedExtension", [pk]))
+                                if (res && res.success === true) {
+                                    pubkeyField.text = ""
+                                    root.addFeedback = "Added"
+                                    root.refreshPaired()
+                                } else {
+                                    root.addFeedback = (res && res.error) ? res.error : "Error"
+                                }
+                                feedbackTimer.restart()
+                            }
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: "Add"
+                                font.pixelSize: 12
+                                font.bold: true
+                                color: root.textPrimary
+                            }
+
+                            MouseArea {
+                                id: addPairedArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: addPairedBtn.doAdd()
+                            }
+                        }
+                    }
+
+                    // Inline feedback (success/error after Add)
+                    Text {
+                        visible: root.addFeedback !== ""
+                        text: root.addFeedback
+                        font.pixelSize: 11
+                        color: root.addFeedback === "Added" ? root.successGreen : root.errorRed
+                        Layout.fillWidth: true
+                    }
+
+                    // Paired keys list
+                    Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: Math.max(40, Math.min(pairedList.contentHeight + 16, 112))
+                        radius: 6
+                        color: root.bgSecondary
+                        border.color: root.borderColor
+                        border.width: 1
+                        clip: true
+
+                        Text {
+                            anchors.centerIn: parent
+                            visible: pairedModel.count === 0
+                            text: "No extensions paired"
+                            color: root.textMuted
+                            font.pixelSize: 11
+                        }
+
+                        ListView {
+                            id: pairedList
+                            anchors { fill: parent; margins: 8 }
+                            clip: true
+                            spacing: 4
+                            model: ListModel { id: pairedModel }
+
+                            delegate: RowLayout {
+                                required property string fullKey
+                                required property string shortKey
+
+                                width: pairedList.width
+                                spacing: 8
+
+                                Rectangle {
+                                    width: 6; height: 6; radius: 3
+                                    color: root.successGreen
+                                    Layout.alignment: Qt.AlignVCenter
+                                }
+
+                                Text {
+                                    text: shortKey
+                                    font.pixelSize: 11
+                                    font.family: "monospace"
+                                    color: root.textSecondary
+                                    Layout.fillWidth: true
+                                    elide: Text.ElideRight
+                                }
+
+                                Text {
+                                    text: "remove"
+                                    font.pixelSize: 10
+                                    color: removeArea.containsMouse ? root.errorRed : root.textMuted
+
+                                    MouseArea {
+                                        id: removeArea
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            if (typeof logos === "undefined" || !logos.callModule) return
+                                            logos.callModule("keeper", "removePairedExtension", [fullKey])
+                                            root.refreshPaired()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
