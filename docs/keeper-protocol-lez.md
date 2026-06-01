@@ -1348,9 +1348,9 @@ to read state is unnecessary and wasteful.
 
 ## Storage Holding Verification
 
-The Logos Storage node used by Stash exposes native primitives for proving a node
-actively holds a CID. These are already present in `storage_module_api.h` (confirmed
-via `StorageModule` typed SDK at `vpavlin/logos-storage-module` `v0.3.2`).
+The Logos Storage node used by Keeper exposes SDK calls for local inventory and
+reachability checks. These are present in `storage_module_api.h` (confirmed via
+`StorageModule` typed SDK at `vpavlin/logos-storage-module` `v0.3.2`).
 
 ### Storage node SDK capabilities
 
@@ -1363,6 +1363,13 @@ via `StorageModule` typed SDK at `vpavlin/logos-storage-module` `v0.3.2`).
 
 At the network level, Logos Storage automatically announces manifest CIDs on its Discv5
 DHT. Any peer can discover what a node holds without asking it directly.
+
+> **Note — these are not cryptographic proofs.** `exists()` and `downloadChunks()`
+> confirm local presence or network reachability at call time; they do not produce a
+> verifiable artifact that can be submitted on-chain. They are the inputs to
+> `verify_holding` (self-reported) and the evidence basis for `challenge_holding`
+> (third-party triggered). See Logos Storage Research below for why a native
+> cryptographic proof primitive is not available in v1.
 
 ### `verify_holding` instruction (LEZ)
 
@@ -1780,7 +1787,7 @@ wins by blockchain ordering."
 | Proof files are authentic IA content | Trust IA's sha1/md5 in metadata; `metadata_hash` anchors the claim at time of preservation |
 | Sybil resistance | `challenge_holding` (active catching) + `holding_deposit` in v2 (economic downside) |
 | `block_number` in instructions | Submitted by client, trust-based in v1. `logos-co/spel#226` (`ClockContext`) will eliminate this gap — see Upstream Research. |
-| Full zk proof of holding | v1 is challenge-response (economic deterrent); v2 target is ZK proof of data possession (zk-SNARK PoDP, analogous to Filecoin PoDP launched May 2025) ¹ |
+| Full zk proof of holding | v1 is challenge-response (economic deterrent). Logos Storage (Codex) has a Groth16 ZK proof system but it is marketplace-gated and challenge-response-driven (entropy from future block hash) — not usable as a standalone on-chain CID verification primitive. A Keeper-specific ZK circuit would need to be built from scratch. v2 target remains ZK PoDP; timeline depends on LEZ ZK verifier support. ¹ |
 
 ---
 
@@ -1912,8 +1919,10 @@ actual evidence, not just the ability to scan the chain.
 Prove "I hold some item in the IA catalogue" without revealing which one. This requires:
 - ZK set-membership proof over IA catalogue identifiers
 - Reward claims against a ZK identity, not a public `AccountId`
-- Challenges proven via storage proof (ties directly into Q5 — Logos Storage team’s
-  native proof API, if it exists)
+- Challenges proven via storage proof. **Research finding (2026-06-01):** Logos Storage
+  (Codex) has a Groth16 ZK proof system but it is marketplace-gated and requires future
+  block-hash entropy — no standalone PoDP primitive exists or is planned. A Keeper-specific
+  ZK circuit would need to be built independently. See Logos Storage Research section.
 
 ---
 
@@ -1941,9 +1950,9 @@ private PDAs or ZK proofs.
 
 6. **Private PDA performance** — What is the cost of `private_pda` vs standard PDA
    for `init` and `mut` operations? If high, commit-reveal is preferable for v1.
-7. **Storage-level proof** — Does Logos Storage expose a reachability or possession
-   proof that does not require naming the preserver? This would enable privacy-preserving
-   challenges in Tier 3.
+7. **Storage-level proof** — **ANSWERED (2026-06-01).** Logos Storage (Codex) has a
+   Groth16 ZK proof system but it is marketplace-gated and not usable as a standalone
+   on-chain CID verification primitive. See Logos Storage Research section.
 
 ## Competitive Positioning
 
@@ -2052,6 +2061,52 @@ logic is unaffected.
 
 
 Phase 1 (`initialize_program`) can start immediately. Phases 2–5 require the internal ledger workaround (Workaround B) until the stable token API is confirmed. Phase 6 (v2 rewards) activates when the v2 reward model launches.
+
+---
+
+## Logos Storage Research
+
+Findings from researching Logos Storage (Codex) proof capabilities (2026-06-01).
+Relevant to: Q5 (open questions), Honest Gaps table, Privacy Option E.
+
+### What Logos Storage / Codex provides
+
+Logos Storage wraps **Codex** — an erasure-coded decentralized storage network with a
+Groth16 ZK proof-of-storage system.
+
+| Layer | Detail |
+|-------|--------|
+| **Data structure** | 2 KB cells hashed with Poseidon2; cells form Merkle trees into slot roots; slot roots form a dataset root |
+| **On-chain commitment** | Dataset root posted to a storage contract at deal time |
+| **ZK circuit** | Groth16 (circom); public inputs: dataset root, slot index, entropy (block hash); private inputs: cell inclusion proofs |
+| **Entropy source** | Future Ethereum block hash — prover cannot precompute without it |
+| **Proof trigger** | Periodic challenge windows within a marketplace storage deal |
+| **On-chain verifier** | Groth16 verifier deployed in  (PR #79 merged) |
+| **SDK proof surface** | None — the Logos Storage module API (16 endpoints) has no proof generation, submission, or verification methods |
+
+### Why this does not help Keeper v1
+
+1. **Marketplace-gated.** Proofs only exist within a  marketplace deal. There is no mechanism to prove “node X holds CID Y right now” outside a prior storage contract and active challenge window.
+2. **Interactive by design.** The entropy input (block hash) is required and comes from a future block — the prover cannot generate a valid proof without being challenged first. No non-interactive variant exists.
+3. **No PoDP equivalent.** The Codex system is analogous to Filecoin PoSt (periodic stochastic challenges), not Filecoin PoDP (single-transaction possession proof). No standalone PoDP is on the Codex roadmap.
+4. **Different chain.** Codex contracts are on Ethereum. Keeper is on LEZ. Cross-chain proof bridging is out of scope for v1.
+
+### Implications for Keeper
+
+| Use case | Assessment |
+|----------|------------|
+|  (v1) |  +  are the right inputs; self-reported by preserver. No native cryptographic proof available. |
+|  (v1) |  reachability check is the right evidence basis for challengers. No on-chain proof needed. |
+| ZK proof of possession (v2) | A Keeper-specific Groth16/PLONK circuit would need to be built from scratch. Cannot reuse Codex circuits (different commitment scheme, no LEZ verifier). Requires LEZ runtime ZK verifier support as a prerequisite. |
+| Privacy-preserving challenges (v2) | Depends on the ZK path above. Not unblocked by existing Codex infrastructure. |
+
+### Sources
+
+- codex-storage/codex-storage-proofs-circuits: Groth16 circuits
+- codex-storage/codex-contracts-eth: marketplace + verifier contracts
+- logos-storage/logos-storage-contracts-eth PR #79: Groth16 verifier integration
+- https://blog.codex.storage/on-data-verification-and-sampling/
+- https://blog.codex.storage/protocol-breakdown-how-the-codex-p2p-network-works/
 
 ---
 
