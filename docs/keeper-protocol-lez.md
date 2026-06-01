@@ -15,12 +15,28 @@ User preserves IA item
   → keeper_protocol::register_preservation(ia_id, cid, hashes, ...)
       → ItemRecord PDA (first-write atomic — first preserver wins)
       → PreservationRecord PDA (per-user per-item)
-      → UserStats PDA updated
-      → TokenBalance minted
+      → UserStats.keeper_score incremented (soulbound — never transfers)
   → Subsequent preservers: confirmed or flagged suspicious
+
+End of each month:
+  → keeper_protocol::claim_monthly_reward(month)
+      → reads keeper_score snapshot
+      → mints economic reward tokens proportional to share of total score
+      → RewardClaim PDA created (claimed = true for this month)
 ```
 
 The on-chain `ItemRecord` is the source of truth — not Beacon, not Cord.
+
+## Dual Token Model
+
+Two separate tokens with separate properties:
+
+| Token | Type | Purpose | Transferable |
+|-------|------|---------|-------------|
+| **Keeper Score** | Soulbound, on-chain `UserStats.keeper_score` | Leaderboard ranking, dispute voting weight, monthly reward share calculation | No — permanently bound to the earning account |
+| **Economic Reward** (`$KEEP`) | Standard transferable token | Monthly payout — can be sold, traded, used in other programs | Yes |
+
+Separating them means the leaderboard and voting weight can never be bought. Economic value is preserved via monthly distribution.
 
 ---
 
@@ -105,18 +121,23 @@ pub struct UserStats {
     pub total_bytes_preserved: u64,    // leaderboard 2: archive board
     pub confirmed_count:       u64,    // confirmed other users' items
     pub mismatch_count:        u32,    // reputation penalty source
-    pub tokens_earned:         u128,
+    pub keeper_score:          u128,   // soulbound — accumulates forever, never transfers
     pub last_block:            u64,
 }
 ```
 
-### `TokenBalance`
-One per user.
+### `RewardClaim`
+One per `(user, month)`. Tracks whether a user has claimed their monthly economic reward.
+`month` is a `u32` in `YYYYMM` format (e.g. `202607`).
 
 ```rust
 #[account_type]
-pub struct TokenBalance {
-    pub amount: u128,
+pub struct RewardClaim {
+    pub user:         AccountId,
+    pub month:        u32,
+    pub score_snapshot: u128,  // keeper_score at time of claim
+    pub amount:       u128,    // economic tokens minted this claim
+    pub claimed:      bool,
 }
 ```
 
@@ -141,7 +162,7 @@ pub struct PreserverRegistry {
 | `pres::{preserver}::{ia_id}` | `[literal("pres"), account("preserver"), arg("ia_id")]` | (user, item) pair |
 | `dispute::{ia_id}` | `[literal("dispute"), arg("ia_id")]` | disputed item |
 | `stats::{user}` | `[literal("stats"), account("user")]` | user |
-| `balance::{user}` | `[literal("balance"), account("user")]` | user |
+| `claim::{user}::{month}` | `[literal("claim"), account("user"), arg("month")]` | (user, month) pair |
 | `registry` | `[literal("registry")]` | singleton |
 
 ---
@@ -150,19 +171,16 @@ pub struct PreserverRegistry {
 
 ### `create_user`
 
-One-time setup. Creates the `UserStats` and `TokenBalance` PDAs for a new preserver
-and appends the user's `AccountId` to the global `PreserverRegistry`.
-Keeper calls this on first launch. `#[account(init)]` on stats/balance rejects a
-second call — the client ignores `AccountAlreadyInitialized` for this instruction.
+One-time setup. Creates the `UserStats` PDA for a new preserver and appends the user's
+`AccountId` to the global `PreserverRegistry`. Keeper calls this on first launch.
+`#[account(init)]` on stats rejects a second call — the client ignores
+`AccountAlreadyInitialized` for this instruction.
 
 ```rust
 #[instruction]
 pub fn create_user(
     #[account(init, pda = [literal("stats"), account("user")])]
     stats: AccountWithMetadata,
-
-    #[account(init, pda = [literal("balance"), account("user")])]
-    balance: AccountWithMetadata,
 
     #[account(mut, pda = [literal("registry")])]
     registry: AccountWithMetadata,
@@ -193,12 +211,9 @@ pub fn register_preservation(
     #[account(signer)]
     preserver: AccountWithMetadata,
 
-    // mut — accounts created separately via create_user
+    // mut — account created separately via create_user
     #[account(mut, pda = [literal("stats"), account("preserver")])]
     stats: AccountWithMetadata,
-
-    #[account(mut, pda = [literal("balance"), account("preserver")])]
-    balance: AccountWithMetadata,
 
     ia_id:          String,
     collection_cid: [u8; 32],
@@ -218,7 +233,7 @@ if item does not exist yet (first_preserver == default):
     → item.block = block_number
     → stats.first_preserved_count += 1
     → stats.total_bytes_preserved += total_bytes
-    → mint full reward
+    → stats.keeper_score += compute_score(file_count, total_bytes)   // soulbound
     → item.status = Clean
 
 else:
@@ -227,7 +242,7 @@ else:
     if both match:
         → stats.confirmed_count += 1
         → stats.total_bytes_preserved += total_bytes
-        → mint confirmation bonus (20% of full reward)
+        → stats.keeper_score += compute_score(file_count, total_bytes) * 20 / 100
         → item.preserver_count += 1
         → item.status = Confirmed (if ≥2 matching)
 
@@ -235,7 +250,7 @@ else:
         → stats.mismatch_count += 1
         → item.mismatch_count += 1
         → item.status = Suspicious
-        → no reward
+        → no score awarded
         → (caller must follow with open_dispute for a formal DisputeRecord)
 ```
 
@@ -292,57 +307,100 @@ pub fn vote_on_dispute(
 
 ---
 
-### `transfer`
+### `claim_monthly_reward`
 
-Move tokens between users.
+Called once per month per user to mint economic `$KEEP` tokens proportional to their
+`keeper_score` share. Creates a `RewardClaim` PDA — `#[account(init)]` prevents double
+claiming the same month.
 
 ```rust
 #[instruction]
-pub fn transfer(
-    #[account(mut, pda = [literal("balance"), account("from")])]
-    from_balance: AccountWithMetadata,
+pub fn claim_monthly_reward(
+    #[account(init, pda = [literal("claim"), account("user"), arg("month")])]
+    claim: AccountWithMetadata,
+
     #[account(signer)]
-    from: AccountWithMetadata,
-    #[account(mut, pda = [literal("balance"), account("to")])]
-    to_balance: AccountWithMetadata,
-    amount: u128,
+    user: AccountWithMetadata,
+
+    #[account(pda = [literal("stats"), account("user")])]
+    stats: AccountWithMetadata,
+
+    #[account(mut, pda = [literal("registry")])]
+    registry: AccountWithMetadata,
+
+    month: u32,   // YYYYMM — e.g. 202607
 ) -> SpelResult
+// Logic:
+//   total_score = sum of keeper_score across all registry preservers
+//   user_share  = stats.keeper_score / total_score
+//   reward      = MONTHLY_POOL * user_share
+//   claim.score_snapshot = stats.keeper_score
+//   claim.amount         = reward
+//   claim.claimed        = true
+//   → mint reward $KEEP tokens to user (via reward token program call)
 ```
+
+The `MONTHLY_POOL` size and the `$KEEP` token program address are program constants
+set at deployment. Unclaimed months do not roll over — the pool resets each month.
 
 ---
 
-## Token Reward Formula
+## Keeper Score Formula
 
-Computed inside `register_preservation` — pure arithmetic in the zkVM.
+`keeper_score` is the soulbound on-chain metric. It accumulates with every preservation,
+never decreases, and never transfers. It drives leaderboard ranking, dispute voting
+weight, and monthly economic reward share.
 
 ```rust
-fn compute_reward(file_count: u32, total_bytes: u64) -> u128 {
+fn compute_score(file_count: u32, total_bytes: u64) -> u128 {
     let base:        u128 = 100;
     let mb                = (total_bytes as u128) / 1_000_000;
-    let size_reward: u128 = mb * 10;              // 10 tokens per MB
-    let file_bonus:  u128 = file_count as u128 * 5;  // 5 per file
-    base + size_reward + file_bonus
+    let size_score:  u128 = mb * 10;                  // 10 points per MB
+    let file_bonus:  u128 = file_count as u128 * 5;   // 5 points per file
+    base + size_score + file_bonus
 }
 ```
 
-**Examples:**
+**Score examples:**
 
-| Collection | Files | Size | Reward |
-|------------|-------|------|--------|
-| Small text archive | 3 | 10 MB | 215 tokens |
-| Film with metadata | 12 | 800 MB | 8,160 tokens |
-| Full video collection | 50 | 1 GB | 10,590 tokens |
+| Collection | Files | Size | Score |
+|------------|-------|------|-------|
+| Small text archive | 3 | 10 MB | 215 |
+| Film with metadata | 12 | 800 MB | 8,160 |
+| Full video collection | 50 | 1 GB | 10,590 |
 
-**Reward by scenario:**
+**Score by scenario:**
 
-| Scenario | Reward |
-|----------|--------|
-| First preserver | Full reward |
-| Confirmed — hashes match | 20% of full reward |
+| Scenario | Score awarded |
+|----------|--------------|
+| First preserver | Full score |
+| Confirmed — hashes match | 20% of full score |
 | CID diverges only | 10% — logged, not penalized |
 | Merkle diverges | 0 — flagged suspicious |
-| Metadata diverges | 0 — dispute opened, stake at risk |
-| Dispute resolved in your favor | Social signal only (v1); token slashing deferred to v2 |
+| Metadata diverges | 0 — dispute opened |
+| Dispute resolved in your favor | Social signal only (v1); score boost deferred to v2 |
+
+## Monthly Economic Reward
+
+At the end of each month, preservers call `claim_monthly_reward` to receive transferable
+`$KEEP` tokens. The reward is proportional to their share of total `keeper_score` across
+all preservers.
+
+```
+user_reward = MONTHLY_POOL × (user.keeper_score / total_keeper_score)
+```
+
+**Example — 1,000,000 $KEEP monthly pool:**
+
+| User | Keeper Score | Share | Monthly $KEEP |
+|------|-------------|-------|--------------|
+| alice | 340,000 | 34% | 340,000 |
+| bob | 500,000 | 50% | 500,000 |
+| carol | 160,000 | 16% | 160,000 |
+
+`$KEEP` is a standard transferable token — it can be sold, traded, or used in other
+Logos programs. It has no influence over the leaderboard or voting weight, which are
+driven exclusively by the soulbound `keeper_score`.
 
 ---
 
@@ -646,7 +704,9 @@ download → Stash → get collection CID
          ↓
     keeper_protocol::register_preservation(...)   (new)
          ↓
-    poll for token mint confirmation
+    keeper_score updated on-chain (soulbound)
+         ↓
+    monthly: keeper_protocol::claim_monthly_reward(month) → $KEEP minted
 ```
 
 The generated FFI client from `spel-client-gen --target logos-module` provides typed
@@ -660,8 +720,8 @@ C++ bindings for all instructions directly from the IDL — no hand-written IPC 
 |------|--------------|
 | First-inscriber atomicity | Handler checks `first_preserver == AccountId::default()` on `#[account(mut)]` item — first writer wins by blockchain ordering |
 | On-chain CID record | `ItemRecord` account — queryable by anyone, independent of Beacon |
-| Per-user stats | `UserStats` PDA — incremented on each registration |
-| Token balances | `TokenBalance` PDA — minted in-program, transferable |
+| Per-user stats + soulbound score | `UserStats` PDA — `keeper_score` incremented on each registration, never transfers |
+| Monthly economic reward | `claim_monthly_reward` mints transferable `$KEEP` proportional to score share |
 | Suspicion detection | Logic inside `register_preservation` — pure zkVM arithmetic |
 | Community voting | `vote_on_dispute` weighted by `first_preserved_count` |
 | Cross-program composition | `ctx.caller_program_id` — other programs can verify holdings |
@@ -701,10 +761,12 @@ both PDAs already exist with data — the instruction fails before the handler r
 
 **Resolution applied:** split into two instructions:
 
-- `create_user` — `#[account(init)]` on `stats` and `balance`; called once per user.
-- `register_preservation` — `#[account(mut)]` on `stats` and `balance`; assumes they exist.
+- `create_user` — `#[account(init)]` on `stats`; called once per user.
+- `register_preservation` — `#[account(mut)]` on `stats`; assumes it exists.
 
 Keeper calls `create_user` on first launch, then `register_preservation` for each item.
+(`TokenBalance` removed entirely under the dual token model — soulbound score lives in
+`UserStats.keeper_score`; economic tokens are minted by `claim_monthly_reward`.)
 
 ---
 
@@ -793,9 +855,10 @@ The reward table referenced "50% of slashed tokens from losing party" on dispute
 resolution. No slash instruction or escrow mechanism was defined, and SPEL has no
 native stake/escrow primitive.
 
-**Resolution applied:** reward table updated — dispute resolution is social signal
-only for v1. Slashing deferred to v2: requires a `stake` escrow PDA at registration
-time and a `resolve_dispute` instruction to redistribute tokens.
+**Resolution applied:** dispute resolution is social signal only for v1. Slashing
+deferred to v2: requires a `stake` escrow PDA (locking `$KEEP` at registration time)
+and a `resolve_dispute` instruction to redistribute the loser's staked `$KEEP` to the
+winner. Soulbound `keeper_score` is never slashed — only the transferable `$KEEP` stake.
 
 ---
 
