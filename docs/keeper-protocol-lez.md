@@ -103,6 +103,7 @@ pub struct ItemRecord {
                                         // maintained by verify_holding; used in per-item bounty distribution
 }
 
+#[account_type]
 pub enum ItemStatus {
     Clean,      // single preserver, no disputes
     Confirmed,  // ≥2 preservers, all hashes match
@@ -132,6 +133,7 @@ pub struct PreservationRecord {
     pub verification_status:  VerificationStatus,
 }
 
+#[account_type]
 pub enum VerificationStatus {
     Pending,    // min_hold_blocks not yet elapsed — no reward contribution
     Active,     // holding confirmed within pool.delinquency_threshold — contributes to active_bytes
@@ -156,6 +158,7 @@ pub struct DisputeRecord {
     pub status:               DisputeStatus,
 }
 
+#[account_type]
 pub enum DisputeStatus {
     Open,
     CanonicalWins,
@@ -276,30 +279,45 @@ pub struct SponsorBounty {
 | `pool` | `[literal("pool")]` | singleton |
 | `registry` | `[literal("registry")]` | singleton |
 
+> **Upstream dependency — multi-seed PDA:** The `pda = [...]` array syntax and `arg("name")`
+> seed type are documented in `spel-framework/issues/1` as a **proposed feature, not yet
+> implemented**. The macro currently supports only single-seed PDAs: `pda = literal("x")` or
+> `pda = account("name")`. Every keeper PDA that uses multi-part seeds (all except `pool` and
+> `registry`) requires this upstream feature to land before the program can be compiled.
+> Multi-seed derivation will combine seeds via `sha256(s1 || s2 || ... || sN)` into one
+> 32-byte `PdaSeed` — this matches `compute_pda()` in `spel-framework-core/src/pda.rs`.
+
 ---
 
 ## Token Transfer Convention
 
-> **Open question for LEZ devs — required before implementation.**
+> **Open question for LEZ devs — mechanism confirmed absent from framework; API call TBD.**
 
 All instructions that move stable tokens use the notation:
 ```
 transfer(from_account, to_account, amount)
 ```
 
-The exact mechanism is **pending LEZ platform confirmation**. Depending on what LEZ
-exposes, this will resolve to one of:
+**Source research finding:** The SPEL framework has **no native token transfer primitive**.
+The fixture program's `transfer` instruction in `tests/e2e/fixture_program/src/lib.rs` is a
+pure account data mutation — it declares `from` and `to` as `#[account(mut)]` and writes
+balance fields directly. `SpelOutput` exposes `chained_calls: Vec<ChainedCall>` (from
+`nssa_core::program::ChainedCall`) as the cross-program invocation mechanism. This is
+likely how a real stable token contract would be called.
+
+The exact call pattern depends on what the LEZ stable token program exposes, but the
+structure will be one of:
 
 | Mechanism | What it means in practice |
 |-----------|--------------------------|
-| Native token transfer primitive | `SpelTransfer::stable(from, to, amount)` or equivalent built-in |
-| Token program CPI | Cross-program call to a standard token contract — requires `token_program` as an extra instruction account |
-| Account balance mutation | Direct write to a balance field on the sender/receiver accounts — only if the runtime enforces conservation |
+| **`ChainedCall` to token program** (most likely) | `SpelOutput::execute(accounts, vec![ChainedCall::new(token_program_id, transfer_ix_data)])` — requires `token_program` as an extra `#[account]` |
+| **Account balance mutation** | Direct write to a `balance: u128` field on the pool/user accounts — only if the runtime enforces conservation; matches the fixture program pattern |
+| **Native primitive** | `SpelTransfer::stable(from, to, amount)` or equivalent — not seen in source; probably does not exist |
 
-**Until confirmed, the doc uses `transfer(from, to, amount)` as a placeholder.**
-Instructions affected: `initialize_program` (none), `register_preservation`,
-`claim_monthly_reward`, `fund_pool`, `challenge_holding`, `finalize_challenge`,
-`fund_item_bounty`, `claim_item_bounty`, `deregister_item`.
+**Until confirmed with LEZ devs, the doc uses `transfer(from, to, amount)` as a placeholder.**
+Instructions affected: `register_preservation`, `claim_monthly_reward`, `fund_pool`,
+`challenge_holding`, `finalize_challenge`, `fund_item_bounty`, `claim_item_bounty`,
+`deregister_item`.
 
 If the mechanism requires a `token_program` or similar extra account, every affected
 instruction signature gains one more `#[account]` parameter. This is a mechanical
@@ -1565,6 +1583,31 @@ See Research Footnotes for sources.
 4. **Free entry with skin in the game** — The holding deposit model provides economic accountability without an entrance barrier. Filecoin requires significant upfront collateral. Keeper requires only the deposit for items you actually register, refundable on clean exit.
 
 5. **Stable reward eliminates participation boom/bust** — DePIN protocols with volatile token rewards see node counts swing with price. Keeper's stable reward makes ROI calculation for preservers simple and predictable — lowering the barrier for non-crypto-native institutions like libraries and universities.
+
+---
+
+## SPEL Framework Upstream Research
+
+Findings from reading `logos-co/spel` v0.4.0 source at `~/basecamp/refs/spel`.
+
+### Confirmed facts
+
+| Topic | Finding |
+|-------|---------|
+| **Token transfer** | No native primitive. `SpelOutput.chained_calls: Vec<ChainedCall>` is the cross-program call mechanism. Fixture `transfer` instruction is a pure account data mutation. |
+| **Multi-seed PDA** | `pda = [...]` and `pda = arg(...)` are an **open upstream issue** (`spel-framework/issues/1`), not yet in the macro. Only `pda = literal("x")` and `pda = account("name")` (single seed) work today. |
+| **Seed hashing** | Multi-seeds will combine via `sha256(s1 \|\| s2 \|\| ... \|\| sN)`. Seed types: `literal` → UTF-8 zero-padded to 32 bytes; `account` → 32-byte AccountId; `arg` → serialised bytes zero-padded to 32. |
+| **`#[account_type]` on enums** | Enum helper types (`VerificationStatus`, `ItemStatus`, `DisputeStatus`) must carry `#[account_type]` to appear in `SpelIdl::types` and be resolvable by the IDL BFS scanner. Fixed in this doc. |
+| **SpelError variants** | `AccountAlreadyInitialized` (code 1002), `AccountNotInitialized` (1003), `InsufficientBalance` (1004), `Overflow` (1007), `Unauthorized` (1008), `PdaMismatch` (1009). Domain errors use `SpelError::custom(code, message)` (offset 6000). |
+| **Block number** | NOT injected by runtime. `block_validity_window` constrains tx validity range but does not expose block number inside a handler. Confirmed: keeper doc's trust-based `block_number: u64` parameter is the only option for v1. |
+| **Variable accounts** | `Vec<AccountWithMetadata>` works for rest-style variable-length account lists (confirmed via `batch_update` fixture). `PreserverRegistry` as `Vec<AccountId>` is valid. |
+| **Private PDAs** | Supported via `#[account(init, private_pda, pda = ..., npk = arg("user_npk"))]`. Not used in keeper v1 but available. |
+| **`ProgramContext`** | `ctx: ProgramContext` provides `self_program_id` and `caller_program_id`. Never part of instruction ABI or IDL. Useful for `#[account(owner = self_program_id)]` constraints. |
+
+### Upstream blockers for keeper v1
+
+1. **Multi-seed PDA** (`spel-framework/issues/1`) — all PDAs except `pool` and `registry` depend on this. Must land before any keeper instruction can be compiled. Worth filing a comment on the issue to signal demand.
+2. **ChainedCall stable transfer** — need LEZ dev to confirm the stable token program ID and `ChainedCall` format before `register_preservation`, `claim_monthly_reward`, and others can be implemented.
 
 ---
 
