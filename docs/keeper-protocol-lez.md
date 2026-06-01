@@ -1732,6 +1732,42 @@ See Research Footnotes for sources.
 
 ## Privacy Analysis
 
+### Why this matters
+
+Keeper is explicitly designed to preserve collections that may be legally contested.
+The $621M lawsuit against the Internet Archive is the founding motivation for the
+protocol. A preserver who stores a potentially sueable collection must be able to
+participate without their identity being publicly linked to that collection. If it is,
+the censorship-resistance guarantee of the protocol is undermined: a rights-holder who
+cannot take down the data can instead target the individual preservers by name.
+
+In v1 every `PreservationRecord` PDA binds a public `AccountId` to a plaintext `ia_id`.
+The `PreserverRegistry` lists all participants. The combination means any third party
+can reconstruct a full map of "who is preserving what" for any collection of interest
+without any special access.
+
+### Options
+
+| Option | What it hides | Tradeoff | Status |
+|--------|--------------|----------|--------|
+| **A — Do nothing** | Nothing | Full public exposure; legal targeting possible | v1 default |
+| **B — Commit-reveal** | Collection-to-identity link (`ia_id` replaced by `sha256(ia_id \|\| nonce)`) | Passive enumeration blocked; active challenger who already knows ia_id via network monitoring can still challenge. `first_preserver` in `ItemRecord` still public. Cheapest to implement. | Proposed v1 option |
+| **C — Private PDAs** | PDA existence not derivable by third parties even knowing inputs | Challenger must have independent network evidence before challenging — stronger model. Requires SPEL `private_pda` support (available). `active_bytes` on `UserStats` still visible. | v1.5 candidate |
+| **D — Ephemeral keys** | Per-collection identity; main account never on-chain with ia_id | Key management complexity. Aggregating rewards across ephemeral keys requires ZK or trusted aggregator. | v2 candidate |
+| **E — ZK proofs** | Everything: proves "I hold some item in the IA catalogue" without revealing which one or who | Requires: ZK circuit (set membership + nullifier), on-chain verifier primitive in LEZ runtime (not confirmed), client-side proving (~seconds per item), trusted setup if Groth16/PLONK. 3–6 months of ZK engineering. Full anonymity but high complexity. | v2 target |
+| **F — Opt-in public mode** | Nothing (opt-in institutions stay fully public) | Dual code path in every collection instruction. Institutions wanting public credit keep current behaviour. | Compatible with B/C/D/E |
+
+**Fundamental tension:** reward accounting requires the protocol to know `active_bytes`
+per account to compute proportional payouts. Options B–D hide *which* collections
+contribute to that count while still revealing the total byte volume. Option E (ZK) is
+the only path to hiding both.
+
+**Minimum recommended for v1:** Option B (commit-reveal). Two-week implementation,
+no new runtime dependencies, breaks the primary attack vector (passive enumeration).
+Option F (opt-in public mode) is additive and should ship alongside B.
+
+---
+
 ### Exposure map
 
 Every on-chain account in v1 links an `AccountId` to specific collections. This table
