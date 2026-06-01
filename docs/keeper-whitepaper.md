@@ -1,12 +1,12 @@
 # Keeper Protocol — Whitepaper
 
-*Permanent preservation of the world's knowledge, backed by verifiable incentives.*
+*Permanent preservation of the world's knowledge, verifiable on-chain.*
 
 ---
 
 ## TLDR
 
-The Internet Archive is under threat. Centralized archives can be sued, seized, or shut down. Keeper Protocol makes permanent preservation unstoppable by putting it on a blockchain: anyone who downloads and holds an Internet Archive collection earns stable rewards for as long as they keep holding it. The more people preserve, the more resilient the archive becomes. No single entity controls it. No single lawsuit can take it all down.
+The Internet Archive is under threat. Centralized archives can be sued, seized, or shut down. Keeper Protocol makes permanent preservation unstoppable by putting it on a blockchain: anyone who downloads and holds an Internet Archive collection registers that fact on-chain, earns a permanent reputation score for it, and makes the archive harder to destroy. The more nodes hold a collection, the more resilient it becomes. No single entity controls it. No single lawsuit can take it all down.
 
 ---
 
@@ -32,7 +32,7 @@ Logos was founded on the principle that sovereignty over information must be bui
 
 > "Logos wholeheartedly supports the Internet Archive and similar efforts to prevent the eradication and distortion of our collective memory." ¹
 
-The Logos tech stack — Logos Messaging, Logos Storage, Logos Blockchain — exists precisely because censorship-resistant infrastructure cannot be built on top of systems that can be censored. Keeper Protocol is the economic layer that makes decentralized preservation self-sustaining rather than dependent on donations and goodwill.
+The Logos tech stack — Logos Messaging, Logos Storage, Logos Blockchain — exists precisely because censorship-resistant infrastructure cannot be built on top of systems that can be censored. Keeper Protocol is the coordination layer that makes decentralized preservation self-sustaining rather than dependent on a single organization's continued existence.
 
 ---
 
@@ -42,25 +42,25 @@ The Logos tech stack — Logos Messaging, Logos Storage, Logos Blockchain — ex
 
 Every Internet Archive collection has an identifier — a stable, permanent ID like `popeye_taxi-turvey` or `great-78-project`. Keeper treats these identifiers as first-class on-chain objects. When a preserver downloads a collection and uploads it to Logos Storage, they register that fact on-chain. The chain records who preserved what, when, and how much data they are actively holding.
 
-At the end of each month, the protocol distributes rewards from a shared pool to everyone who kept their data active. The more data you hold, the more you earn. Stop holding it, and you stop earning.
+That registration is the core act. It is public, permanent, and verifiable — independent of any institution's continued existence.
 
 ### The three actors
 
-**Preservers** are the nodes of the network. They download Internet Archive collections, store them on Logos Storage, and register their holdings on-chain. In return, they earn `keeper_score` — a permanent on-chain record of their contribution — and, in the reward-enabled phase, a monthly share of the stable reward pool proportional to how much data they are actively holding. Joining is free.
+**Preservers** are the nodes of the network. They download Internet Archive collections, store them on Logos Storage, and register their holdings on-chain. Every act of preservation earns `keeper_score` — a permanent, soulbound on-chain record of contribution that cannot be transferred, bought, or revoked. Joining is free.
 
-**Sponsors** are institutions, individuals, or foundations who believe specific collections matter. The Internet Archive, a university library, a museum, a community — anyone can fund a bounty for a specific collection. Preservers of that collection earn from the bounty in addition to the monthly pool. Sponsorship creates a direct economic signal: *this collection is worth preserving*.
+**Sponsors** are institutions, individuals, or foundations who believe specific collections matter. The Internet Archive, a university library, a museum, a community — anyone can fund a bounty for a specific collection, creating a direct economic signal: *this collection is worth preserving*.
 
-**The pool** is funded from three external sources: yield earned on escrowed preserver deposits (principal stays returnable; yield flows into rewards), institutional contributions from organizations like the Internet Archive, universities, or individual donors (`fund_pool` is permissionless), and challenge forfeitures when a preserver fails an audit after a grace period to re-prove possession. The pool belongs to no one. It is a public resource that flows to whoever is doing the work.
+**The ledger** belongs to no one. Every preservation registration, every challenge, every score is on-chain and auditable. No intermediary controls access. No platform ban can erase the record.
 
 ### Trust without permission
 
-A preserver's claim to be holding a collection is not taken on faith. Any third party can challenge it: submit an on-chain assertion that a collection's CID is unreachable on the Logos Storage network. The preserver then has a fixed window to prove otherwise — and a grace period to re-prove possession before any penalty applies, so the goal stays clean content, not punishment. If they respond — the challenge fails and the challenger's stake is forfeited. If they cannot — the preserver is marked delinquent, their deposit is slashed into the reward pool, and the challenger earns a capped bounty.
+A preserver's claim to be holding a collection is not taken on faith. Any third party can challenge it: submit an on-chain assertion that a collection's CID is unreachable on the Logos Storage network. The preserver then has a fixed window to prove otherwise. If they respond — the challenge fails. If they cannot — the preserver is marked delinquent and loses standing in the network.
 
-This creates a market for auditing. It pays to catch cheaters. The bounty is deliberately modest — enough to reward the catch, not enough to make hunting failures a business model. Over time, this economic pressure makes cheating unprofitable — not because everyone is watching all the time, but because anyone who tries to collect rewards without actually holding data risks losing more than they gain. This is an economic deterrent, not a cryptographic proof; cryptographic verification is a future target.
+This is not a financial system. It is an accountability system. The protocol does not require everyone to be watched all the time — it requires that the cost of being caught faking is high enough that faking is not worth it.
 
 ### A record that cannot be taken from you
 
-Every preservation act is recorded permanently on-chain as `keeper_score` — a soulbound metric that accumulates forever and cannot be transferred, bought, or sold. It is a permanent record of contribution, like a publication record or a service medal. When a library or university participates, their contribution to the global archive is written into the chain's history, independent of any institution's continued existence.
+Every preservation act accumulates permanently as `keeper_score` — a metric that grows with time and cannot be reset by a platform ban, a company acquisition, or a change in terms of service. A preserver who contributes for ten years carries that record in the chain's history regardless of what happens to any institution or service. When a library or university participates, their contribution to the global archive is written permanently into the chain.
 
 ---
 
@@ -68,13 +68,13 @@ Every preservation act is recorded permanently on-chain as `keeper_score` — a 
 
 Decentralized storage protocols have existed for years. Filecoin, Arweave, Storj — all functional, all growing. None of them are focused on cultural preservation. They are storage markets or investment vehicles. Keeper is neither.
 
-**The reward is stable.** Protocols that pay preservers in their own token create a feedback loop: when token price drops, preservers leave; when preservers leave, service degrades; when service degrades, the token drops further. Keeper pays preservers in stable, sourced from outside the system — deposit yield, institutional contributions, and challenge forfeitures. No speculative token. No closed loop where rewards can never exceed total stake. A library or university can calculate their expected return with the same certainty as a utility bill.
-
 **The mission is specific.** Keeper is not a general-purpose storage market. Every collection in the system is an Internet Archive collection with a stable identifier, verified metadata, and a content hash. This specificity is a feature: preservers know exactly what they are preserving, sponsors know exactly what they are funding, and auditors know exactly what to check.
 
-**The identity layer is permanent.** `keeper_score` cannot be stripped by a platform ban, a company acquisition, or a change in terms of service. A preserver who contributes for ten years carries that record in the chain's history regardless of what happens to any institution or service.
+**The identity layer is permanent.** `keeper_score` is the first on-chain reputation primitive built specifically for preservation work. It compounds over time. It cannot be bought. A library that preserves ten thousand collections has a record that speaks for itself — permanently, on-chain, without any central authority to appeal to.
 
-**Institutions can participate directly.** The `fund_pool` instruction is permissionless — the Internet Archive, a university endowment, or any individual can top up the reward pool at any time. The `fund_item_bounty` instruction lets them express preference: *this specific collection matters to us*. This is a direct economic relationship between those who value preservation and those who do the preserving, with no intermediary taking a cut.
+**The economic layer is stable when it activates.** Protocols that pay in their own token create feedback loops: price drops, preservers leave, service degrades, price drops further. Keeper's reward layer — when activated — pays in stable, sourced from outside the system: deposit yield, institutional contributions, and challenge forfeitures. No speculative token. No closed loop where rewards can never exceed total stake.
+
+**Institutions can participate without asking permission.** There is no application process. A university, a library, or the Internet Archive itself can start preserving, sponsoring specific collections, or contributing to the reward pool with a single signed transaction. No intermediary takes a cut.
 
 ---
 
@@ -82,9 +82,9 @@ Decentralized storage protocols have existed for years. Filecoin, Arweave, Storj
 
 The Logos network is building infrastructure for communities that need to exist independent of any state or corporation. Information preservation is not separate from that mission — it is the foundation of it.
 
-A movement that cannot preserve its own history is fragile. A civilization whose records exist only on centralized servers is one court order away from losing its past. Keeper Protocol is one piece of the answer: an economic system that makes it profitable to hold the archive, making the archive itself harder to destroy with every node that joins.
+A movement that cannot preserve its own history is fragile. A civilization whose records exist only on centralized servers is one court order away from losing its past. Keeper Protocol is one piece of the answer: a coordination system that makes preservation persistent — not dependent on any single organization's survival, but distributed across thousands of independent nodes, each with a permanent stake in the archive's survival.
 
-The Internet Archive's motto is *universal access to all knowledge*. Keeper Protocol's contribution is to make that access structurally more resilient — not dependent on any single organization's survival, but distributed across thousands of independent nodes, each earning for the work they do.
+The Internet Archive's motto is *universal access to all knowledge*. Keeper Protocol's contribution is to make that access structurally more resilient — written into the chain's history by every node that joins.
 
 ---
 
@@ -92,9 +92,9 @@ The Internet Archive's motto is *universal access to all knowledge*. Keeper Prot
 
 Universities, libraries, museums, and cultural organizations can participate in three ways:
 
-1. **Preserve** — run a Logos Storage node, download and register collections, earn monthly rewards proportional to holdings.
-2. **Sponsor** — fund a bounty for collections your institution cares about, creating a persistent economic signal that attracts and retains preservers for those specific items.
-3. **Top up the pool** — make a one-time or recurring contribution to the global reward pool, supporting all preservation work across all collections.
+1. **Preserve** — run a Logos Storage node, download and register collections, build an on-chain preservation record that accumulates permanently as `keeper_score`.
+2. **Sponsor** — fund a bounty for collections your institution cares about, creating a persistent on-chain signal that attracts and retains preservers for those specific items.
+3. **Contribute to the pool** — make a one-time or recurring contribution to the global reward pool, supporting all preservation work across all collections.
 
 All three paths are on-chain, transparent, and auditable. There is no application process, no approval committee, and no single organization that can revoke access.
 
@@ -106,7 +106,7 @@ Keeper Protocol is in design phase. The LEZ on-chain program is being specified 
 
 → [Keeper Protocol — LEZ Program Design](keeper-protocol-lez.md)
 
-The Logos testnet is expected in 2026. Keeper Protocol targets deployment on testnet as an early demonstration of real-world incentivized preservation at the LEZ application layer.
+The Logos testnet is expected in 2026. Keeper Protocol targets deployment on testnet as an early demonstration of verifiable, on-chain preservation at the LEZ application layer.
 
 ---
 
