@@ -47,11 +47,13 @@ At any time (any node — challenge-response audit):
 
 The on-chain `ItemRecord` is the source of truth — not Beacon, not Cord.
 
-> **Instruction scope note:** The flowchart above shows the core use case (10 of 23 v1
-> instructions). Omitted for brevity: `initialize_program`, `open_dispute`,
-> `vote_on_dispute`, `snapshot_user`, `take_monthly_snapshot`, `withdraw`, `deregister_user`,
+> **Instruction scope note:** The flowchart above shows the core use case (10 of 23
+> total instructions: 16 active in v1, 7 reserved for v2). Omitted for brevity:
+> v1: `initialize_program`, `open_dispute`, `vote_on_dispute`, `withdraw`, `deregister_user`,
 > `deregister_item`, `migrate_score`, `create_channel`, `add_channel_entry`,
-> `verify_channel`, `subscribe_channel`. See the Instructions section for the complete set.
+> `verify_channel`, `subscribe_channel`; v2: `fund_pool`, `snapshot_user`,
+> `take_monthly_snapshot`, `claim_monthly_reward`, `create_item_bounty`,
+> `fund_item_bounty`, `claim_item_bounty`. See the Instructions section for the complete set.
 
 ## Channel Subscriptions
 
@@ -326,6 +328,18 @@ pub struct BountyClaim {
     pub ia_id:  String,
     pub month:  u32,
     pub amount: u128,   // stable paid out this claim
+}
+```
+
+### `VoteRecord`
+One per `(voter, ia_id)`. Prevents the same voter casting multiple votes on the same dispute.
+Created by `vote_on_dispute` as `#[account(init)]`. (M3 dedup guard)
+
+```rust
+#[account_type]
+pub struct VoteRecord {
+    pub voter:  AccountId,
+    pub ia_id:  String,
 }
 ```
 
@@ -615,7 +629,7 @@ pub fn vote_on_dispute(
 
 ---
 
-### `claim_monthly_reward`
+### `claim_monthly_reward` *(v2 — inactive in v1)*
 
 Called once per month per user. Transfers stable from `RewardPool` proportional to
 the user's `active_bytes` share of the network total. `#[account(init)]` on the claim
@@ -667,9 +681,9 @@ and increase next month's budget. The pool never distributes more than its curre
 Any node can challenge a preserver's claimed holding. The challenger asserts (off-chain
 verified) that the preserver's CID is unreachable on the Logos Storage network.
 The preserver then has `pool.challenge_response_window` blocks to submit a successful
-`verify_holding` — proving the CID is reachable — or be immediately set Delinquent
-and lose their holding deposit. Challengers who are wrong lose their anti-spam fee
-to the pool. ³
+`verify_holding` — proving the CID is reachable — or be set Delinquent and lose
+`keeper_score` as the penalty. In v1 the mechanism is reputation-only; token staking
+and spam fees are v2 features. ³
 
 ```rust
 #[instruction]
@@ -693,7 +707,7 @@ pub fn challenge_holding(
     block_number: u64,   // trust-based v1; replaced by ClockContext.block_id when spel#226 lands
 ) -> SpelResult
 // Logic:
-//   // v1: no financial stake; spam deterred by holding_deposit requirement to have registered items
+//   // v1: no financial stake; spam deterred by reputation loss (keeper_score) only
 //   // spel#226 upgrade: if block_number - cooldown[challenger][preserver].last_block < pool.challenge_cooldown_blocks
 //   //   → return Err(ChallengeCooldown)  // rate limit across all items for this pair
 //   challenge.ia_id             = ia_id
@@ -720,7 +734,7 @@ pub fn challenge_holding(
 Called by anyone after `challenge.deadline_block` has passed. Resolves the challenge
 in favour of whichever party won: if the preserver successfully called `verify_holding`
 after the challenge was opened, they are cleared; otherwise they are set Delinquent
-and their holding deposit is forfeited to the challenger as bounty.
+and the challenger earns `keeper_score` as the reward. (v1: reputation-only)
 
 ```rust
 #[instruction]
@@ -737,8 +751,12 @@ pub fn finalize_challenge(
     #[account(mut, pda = [literal("pool")])]
     pool: AccountWithMetadata,
 
-    // challenger account — bounty is paid here if preserver failed
+    // challenger identity check (H1 fix) — must match challenge.challenger
     challenger: AccountWithMetadata,
+
+    // challenger_stats: awards keeper_score on successful challenge (R3-M1 fix)
+    #[account(mut, pda = [literal("stats"), account("challenger")])]
+    challenger_stats: AccountWithMetadata,
 
     preserver:    AccountWithMetadata,
     ia_id:        String,
@@ -753,15 +771,15 @@ pub fn finalize_challenge(
 //   if record.last_verified_block > challenge.challenge_block:
 //     // preserver responded after challenge — cleared
 //     challenge.preserver_cleared = true
-//     // challenger's spam fee already in pool — no refund (cost of being wrong)
+//     // v1: no spam fee refund; challenger bears the gas cost of a wrong challenge
 //
 //   else:
 //     // preserver did not respond — delinquent
 //     record.verification_status = Delinquent
-//     preserver_stats.active_bytes     -= record.total_bytes  (if was Active)
-//     pool.total_active_bytes          -= record.total_bytes  (if was Active)
-//     // v1: no financial bounty; challenger earns keeper_score for successful catch
-//     stats_challenger.keeper_score    += CHALLENGE_SUCCESS_SCORE
+//     preserver_stats.active_bytes         -= record.total_bytes  (if was Active)
+//     pool.total_active_bytes              -= record.total_bytes  (if was Active)
+//     // v1: reputation bounty — challenger earns keeper_score for a successful catch (R3-M1 fix)
+//     challenger_stats.keeper_score        += CHALLENGE_SUCCESS_SCORE
 //     challenge.preserver_cleared = false
 //
 //   record.open_challenge_count -= 1    // H3 fix: allow deregister_item when all challenges resolved
@@ -770,7 +788,7 @@ pub fn finalize_challenge(
 
 ---
 
-### `fund_pool`
+### `fund_pool` *(v2 — inactive in v1)*
 
 Open institutional entry point. Any party — Internet Archive, grant
 programs, or individual donors — can top up the reward pool directly without joining as
@@ -799,7 +817,7 @@ next claim cycle.
 
 ---
 
-### `snapshot_user`
+### `snapshot_user` *(v2 — inactive in v1)*
 
 Called once per month per user, after `take_monthly_snapshot`. Locks the user's
 `active_bytes` into `UserStats.snapshot_active_bytes` for the current snapshot month.
@@ -829,7 +847,7 @@ pub fn snapshot_user(
 
 ---
 
-### `take_monthly_snapshot`
+### `take_monthly_snapshot` *(v2 — inactive in v1)*
 
 Called once per month before any `claim_monthly_reward` call. Freezes the pool budget
 and total active bytes denominator for that month, so all claimants share a fixed
@@ -889,7 +907,7 @@ pub fn withdraw(
 
 ---
 
-### `create_item_bounty`
+### `create_item_bounty` *(v2 — inactive in v1)*
 
 Creates the `SponsorBounty` PDA for a specific IA item. Must be called once before
 `fund_item_bounty`. Analogous to how `create_user` precedes `register_preservation`. ⁴
@@ -911,7 +929,7 @@ pub fn create_item_bounty(
 
 ---
 
-### `fund_item_bounty`
+### `fund_item_bounty` *(v2 — inactive in v1)*
 
 Demand-side entry point. Any party — Internet Archive, a library, a private collector —
 can deposit stable to specifically incentivise preservation of one IA item. The bounty
@@ -940,7 +958,7 @@ pub fn fund_item_bounty(
 
 ---
 
-### `claim_item_bounty`
+### `claim_item_bounty` *(v2 — inactive in v1)*
 
 Called once per month per user per sponsored item. Distributes the item's bounty
 pro-rata by each preserver's contribution to that item's active storage. ⁴
@@ -996,7 +1014,7 @@ incentive signal that attracts new preservers to that specific collection.
 ### `deregister_user`
 
 Allows a preserver to exit cleanly. Removes them from active reward calculations,
-returns all outstanding holding deposits, and marks their stats as deregistered so
+marks their stats as deregistered so
 the leaderboard can filter them out. `keeper_score` and preservation history remain
 on-chain permanently — only the economic participation ends. ⁵
 
@@ -1016,23 +1034,21 @@ pub fn deregister_user(
 //   pool.total_active_bytes -= stats.active_bytes
 //   stats.active_bytes       = 0
 //   stats.is_deregistered    = true   // leaderboard enumeration skips this flag
-//   return all outstanding holding_deposit sums from all user's PreservationRecords
-//   (holding_deposit returns handled per-item — caller issues one deregister_item per record)
+//   (caller issues one deregister_item per record before calling deregister_user)
 ```
 
 > Note: `deregister_user` does not iterate all `PreservationRecord` PDAs (SPEL does not
 > support iteration). Each item must be deregistered separately via `deregister_item`
-> (passes a single `PreservationRecord`), which returns that item's `holding_deposit`
-> and zeroes it. `deregister_user` zeroes `active_bytes` in bulk at the stats level.
+> before calling `deregister_user`. `deregister_user` zeroes `active_bytes` in bulk at
+> the stats level.
 
 ---
 
 ### `deregister_item`
 
-Returns the holding deposit for one registered item and marks it inactive.
-Called once per item when a preserver exits. Calling `deregister_user` first is
-recommended to immediately zero `active_bytes` at the stats level; `deregister_item`
-then handles the per-item deposit refunds one at a time.
+Marks one registered item inactive and removes its bytes from the global pool total.
+Called once per item when a preserver exits. `deregister_user` should be called first
+to immediately zero `active_bytes` at the stats level.
 
 ```rust
 #[instruction]
@@ -1046,6 +1062,10 @@ pub fn deregister_item(
     // M5 fix: stats is required to decrement active_bytes
     #[account(mut, pda = [literal("stats"), account("user")])]
     stats: AccountWithMetadata,
+
+    // pool is required to decrement total_active_bytes (Finding 2 fix)
+    #[account(mut, pda = [literal("pool")])]
+    pool: AccountWithMetadata,
 
     #[account(signer)]
     user: AccountWithMetadata,
@@ -1065,16 +1085,23 @@ pub fn deregister_item(
 > **Integrity note:** `deregister_item` must decrement `stats.active_bytes` and
 > `pool.total_active_bytes` when the item is Active — otherwise the pool counter
 > inflates and rewards are misdistributed. The `ChallengePending` guard prevents the
-> deposit-escape attack (deregister before `finalize_challenge` claims the deposit).
+> challenge escape attack (deregister before `finalize_challenge` records the outcome).
 
 ---
 
 ### `migrate_score`
 
-Transfers `keeper_score` and preservation stats to a new account (key rotation or
+Transfers `keeper_score` and history metrics to a new account (key rotation or
 wallet recovery). Both the old and new accounts must sign — the old to authorise the
 migration, the new to accept. The new user must call `create_user` first to initialise
 `new_stats` before calling `migrate_score`. ⁶
+
+> **Scope:** `migrate_score` migrates reputation history only. `active_bytes` is NOT
+> migrated — the new identity starts at zero and must re-register and re-verify each
+> collection separately. SPEL cannot iterate PDAs, so atomically re-keying all
+> `PreservationRecord` PDAs is impossible; migrating `active_bytes` without migrating
+> the records would allow the new account to claim rewards for storage it does not hold
+> under its own key. (R3-H1 fix)
 
 ```rust
 #[instruction]
@@ -1101,8 +1128,8 @@ pub fn migrate_score(
 //   new_stats.total_bytes_preserved = old_stats.total_bytes_preserved
 //   new_stats.confirmed_count       = old_stats.confirmed_count
 //   new_stats.mismatch_count        = old_stats.mismatch_count
-//   new_stats.active_bytes          = old_stats.active_bytes
-//   old_stats.active_bytes          = 0         // H4 fix: prevent double reward claim
+//   // active_bytes is NOT migrated — new identity must re-register per item (R3-H1 fix)
+//   old_stats.active_bytes          = 0         // H4 fix: prevent double reward claim under old key
 //   old_stats.keeper_score          = 0         // old identity retired
 //   old_stats.is_deregistered       = true
 //   registry.preservers.push(new_user.account_id)
@@ -1112,8 +1139,7 @@ pub fn migrate_score(
 > **Atomicity:** Both `old_user` and `new_user` must sign the same transaction — LEZ
 > enforces this via `#[account(signer)]` on both. Either both sign and the migration
 > executes atomically, or one refuses and the entire tx fails; there is no intermediate
-> state. The new identity should not register new items until the migration tx is confirmed
-> on-chain, as the old identity's `active_bytes` are not zeroed until that point.
+> state.
 
 ---
 
@@ -1410,22 +1436,12 @@ void KeeperPlugin::runVerificationCycle() {
 }
 ```
 
-### Community verification (any peer)
-
-Any Keeper node can verify another node's holdings by attempting a network retrieval
-and submitting the same `verify_holding` instruction (verifier ≠ preserver):
-
-```cpp
-// Verifier: tries to fetch the target preserver's CID from the network
-m_storage->downloadChunksAsync(collectionCid, /*local=*/false, chunkSize,
-    [this, ia_id, targetPreserverId](LogosResult r) {
-        if (r.success)
-            // Any peer can submit verify_holding on behalf of the preserver
-            submitVerifyHoldingTx(ia_id, targetPreserverId);
-        // If fetch fails → simply do not submit; absence of verification
-        // accumulates toward the delinquency threshold naturally
-    });
-```
+> **v1 note:** In v1, `verify_holding` is preserver-signed only. Third-party peers can
+> attempt a network retrieval to check reachability, but they cannot submit
+> `verify_holding` on behalf of another preserver (doing so would reintroduce the H2
+> trust gap). The community audit path in v1 is `challenge_holding`, not
+> `verify_holding`. A separate `community_verify_holding` instruction will be added in
+> v2 once `logos-co/spel#226` (`ClockContext`) lands. (R3-M2 fix)
 
 ### Full inventory reconciliation
 
@@ -1567,10 +1583,10 @@ C++ bindings for all instructions directly from the IDL — no hand-written IPC 
 | Reward pool (v2) | `fund_pool` — permissionless top-up; split-deposit model planned for v2 |
 | Institutional pool funding | `fund_pool` — permissionless top-up; open to Internet Archive, grants, donors, universities |
 | Monthly stable reward | `claim_monthly_reward` transfers stable pro-rata by active_bytes; hard cap per user |
-| Holding accountability | Per-item `holding_deposit` escrowed; forfeited via `finalize_challenge` if preserver fails challenge |
+| Holding accountability (v2) | Per-item `holding_deposit` escrowed; forfeited via `finalize_challenge` if preserver fails challenge — inactive in v1 |
 | Third-party audit incentive | `challenge_holding` + `finalize_challenge` — challenger earns bounty for catching delinquent node |
 | Demand-side sponsorship | `create_item_bounty` + `fund_item_bounty` + `claim_item_bounty` — sponsors target specific items; two-sided market |
-| Clean exit | `deregister_user` + `deregister_item` — returns deposits, zeroes active_bytes, history preserved |
+| Clean exit | `deregister_user` + `deregister_item` — zeroes active_bytes, history preserved; v2: returns per-item deposits |
 | Score recovery | `migrate_score` — dual-signed key migration; soulbound score survives wallet compromise |
 | Suspicion detection | Logic inside `register_preservation` — pure zkVM arithmetic |
 | Community voting | `vote_on_dispute` weighted by `first_preserved_count` |
@@ -1668,8 +1684,8 @@ for negative evidence.
 instruction that handles the negative case. Any node can assert a CID is unreachable —
 this creates a `ChallengeRecord` PDA with a deadline; if the preserver cannot respond with a
 valid `verify_holding` before the deadline, `finalize_challenge` sets them Delinquent
-and pays the challenger a bounty from the holding deposit. This gives third-party verifiers
-an economic reason to run audits.
+and awards the challenger `keeper_score` as a reputation bounty (v1); token bounty from
+holding deposit is a v2 feature. This gives third-party verifiers an incentive to run audits.
 
 ---
 
@@ -1755,7 +1771,7 @@ wins by blockchain ordering."
 | Proof CID is reachable on network | Verified via `downloadChunks(local=false)` — off-chain, any peer can check; preserver submits `verify_holding` (v1: preserver-signed); any peer can trigger `challenge_holding` |
 | Proof node is *continuously* holding | Preserver can unpin and re-pin just before the deadline — `challenge_holding` creates economic pressure against this |
 | Proof files are authentic IA content | Trust IA's sha1/md5 in metadata; `metadata_hash` anchors the claim at time of preservation |
-| Sybil resistance | Mitigated by `holding_deposit` (economic downside) + `challenge_holding` (active catching) |
+| Sybil resistance | `challenge_holding` (active catching) + `holding_deposit` in v2 (economic downside) |
 | `block_number` in instructions | Submitted by client, trust-based in v1. `logos-co/spel#226` (`ClockContext`) will eliminate this gap — see Upstream Research. |
 | Full zk proof of holding | v1 is challenge-response (economic deterrent); v2 target is ZK proof of data possession (zk-SNARK PoDP, analogous to Filecoin PoDP launched May 2025) ¹ |
 
@@ -1771,9 +1787,9 @@ See Research Footnotes for sources.
 | **A** — No cryptographic proof; verification self-reported | Critical | Partial | `challenge_holding` + `finalize_challenge` add economic deterrent; full ZK proof deferred to v2 |
 | **B** — No collateral; zero downside for fake preservation | High | v1: partial (keeper_score at risk) | v2: split deposit — half to pool non-refundable, half escrowed and forfeited on challenge failure |
 | **C** — Cold start / empty pool kills participation | High | Resolved | Bootstrap strategy documented; foundation seed + public funding schedule required pre-launch |
-| **D** — Third-party verifier has no economic incentive | Medium | Resolved | `challenge_holding` pays `challenge_bounty_bp` of holding deposit to successful challenger |
+| **D** — Third-party verifier has no economic incentive | Medium | v1: partial | v1: challenger earns `keeper_score` on success; v2: token bounty from holding deposit |
 | **E** — `PreserverRegistry` grows forever; ghost accounts | Medium | Resolved | `deregister_user` zeroes active_bytes, sets `is_deregistered`; leaderboard filters flag |
-| **F** — Soulbound score lost on key compromise | Medium | Resolved | `migrate_score` — dual-signed migration; old identity retired, new identity carries full history |
+| **F** — Soulbound score lost on key compromise | Medium | Resolved | `migrate_score` — dual-signed migration; transfers score/history, not `active_bytes`; new identity re-registers per item |
 | **G** — No demand side; sponsors cannot express preference | Medium | Resolved | `create_item_bounty` + `fund_item_bounty` + `claim_item_bounty`; per-item bounty claimable monthly |
 | **H** — No deflationary flywheel | Low | By design | Stable-only redistribution is an explicit choice; documented in Dual Token Model |
 
@@ -1930,7 +1946,7 @@ private PDAs or ZK proofs.
 |-----------|--------|----------|---------|-------|
 | **Purpose** | Cultural preservation (Internet Archive) | General-purpose storage market | Permanent storage of any data | Enterprise/S3-compatible storage |
 | **Reward currency** | Stable (no volatility risk) | FIL (volatile) | AR (volatile) | STORJ (volatile) |
-| **Joining cost** | Free (holding deposit only) | High collateral + hardware | None (read-only) | Node setup cost |
+| **Joining cost** | Free (v1: no deposit; v2: refundable deposit per item) | High collateral + hardware | None (read-only) | Node setup cost |
 | **Soulbound reputation** | Yes — `keeper_score` permanent, unkillable | No | No | No |
 | **Demand-side sponsorship** | Yes — `fund_item_bounty` per-item bounty | Via storage deals | Via endowment | Not applicable |
 | **Institutional top-up** | Yes — `fund_pool` permissionless | No direct equivalent | Foundation grants (off-chain) | VC-funded company |
@@ -1957,7 +1973,7 @@ private PDAs or ZK proofs.
 
 3. **Two-sided market at the item level** — `fund_item_bounty` lets Internet Archive, libraries, or individuals pay to prioritise specific collections. No other storage protocol expresses demand at the content identity level — they work at the byte or sector level only.
 
-4. **Free entry with skin in the game** — The holding deposit model provides economic accountability without an entrance barrier. Filecoin requires significant upfront collateral. Keeper requires only the deposit for items you actually register, refundable on clean exit.
+4. **Low barrier to entry** — v1 is fully free to join: no collateral, no upfront cost. v2 introduces a refundable per-item deposit for accountability. Filecoin requires significant upfront collateral. Keeper's v1 removes that barrier entirely.
 
 5. **Stable reward eliminates participation boom/bust** — DePIN protocols with volatile token rewards see node counts swing with price. Keeper's stable reward makes ROI calculation for preservers simple and predictable — lowering the barrier for non-crypto-native institutions like libraries and universities.
 
@@ -2017,16 +2033,18 @@ logic is unaffected.
 
 ### Build phases
 
-| Phase | Instructions | Blocker workaround |
-|-------|--------------|--------------------|
-| **1 — Singletons** | `initialize_program`, `fund_pool` | No blockers |
-| **2 — Core flow** | `create_user`, `register_preservation`, `verify_holding`, `snapshot_user`, `take_monthly_snapshot`, `claim_monthly_reward`, `deregister_item`, `deregister_user` | Internal ledger workaround (Workaround B) only; multi-seed PDA works natively |
-| **3 — Audit + bounty** | `challenge_holding`, `finalize_challenge`, `create_item_bounty`, `fund_item_bounty`, `claim_item_bounty` | Internal ledger workaround only |
-| **4 — Governance** | `open_dispute`, `vote_on_dispute`, `migrate_score` | No blockers |
-| **Upgrade B** | Replace `withdraw` internal ledger with direct `ChainedCall` transfers in each instruction; remove `withdraw` instruction and `claimable_balance` field | When stable token program ID confirmed (r4bbit) |
+| Phase | Instructions | Notes |
+|-------|--------------|-------|
+| **1 — Singletons (v1)** | `initialize_program` | No blockers |
+| **2 — Core flow (v1)** | `create_user`, `register_preservation`, `verify_holding`, `deregister_item`, `deregister_user`, `withdraw` | Internal ledger workaround (Workaround B); multi-seed PDA works natively |
+| **3 — Channels (v1)** | `create_channel`, `add_channel_entry`, `verify_channel`, `subscribe_channel` | Multi-seed PDA works natively |
+| **4 — Audit (v1)** | `challenge_holding`, `finalize_challenge` | Internal ledger workaround |
+| **5 — Governance (v1)** | `open_dispute`, `vote_on_dispute`, `migrate_score` | No blockers |
+| **6 — Rewards (v2)** | `fund_pool`, `snapshot_user`, `take_monthly_snapshot`, `claim_monthly_reward`, `create_item_bounty`, `fund_item_bounty`, `claim_item_bounty` | Activate when v2 reward model launches |
+| **Upgrade B** | Replace `withdraw` internal ledger with direct `ChainedCall` transfers; remove `withdraw` and `claimable_balance` | When stable token program ID confirmed (r4bbit) |
 
 
-Phase 1 (`initialize_program`, `fund_pool`) can start immediately. Phase 2+ requires the manual PDA verification workaround.
+Phase 1 (`initialize_program`) can start immediately. Phases 2–5 require the internal ledger workaround (Workaround B) until the stable token API is confirmed. Phase 6 (v2 rewards) activates when the v2 reward model launches.
 
 ---
 
