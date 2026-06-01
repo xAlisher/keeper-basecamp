@@ -45,24 +45,33 @@ void KeeperPlugin::initLogos(LogosAPI* api)
     // downloads start) avoids calling getClient() after download callbacks
     // and QRO event emissions, where std::bad_alloc has been observed.
     QTimer::singleShot(2000, this, [this]{
-        if (logosAPI) {
-            stashClient_  = logosAPI->getClient("stash");
-            beaconClient_ = logosAPI->getClient("logos_beacon");
-        }
-        advanceQueue();
-        // Resume tx hash polling for log entries that have a collection CID but no tx hash yet
-        // (handles crash/restart while "confirming…")
-        for (const auto& obj : std::as_const(log_)) {
-            QString id     = obj["id"].toString();
-            QString cid    = obj["collectionCid"].toString();
-            QString txHash = obj["txHash"].toString();
-            if (!id.isEmpty() && !cid.isEmpty() && txHash.isEmpty()) {
-                QString idCopy  = id;
-                QString cidCopy = cid;
-                QTimer::singleShot(3000, this, [this, idCopy, cidCopy]() {
-                    pollForTxHash(idCopy, cidCopy, 72);
-                });
+        try {
+            if (logosAPI) {
+                qDebug() << "KeeperPlugin: acquiring stash client";
+                stashClient_  = logosAPI->getClient("stash");
+                qDebug() << "KeeperPlugin: acquiring beacon client";
+                beaconClient_ = logosAPI->getClient("logos_beacon");
+                qDebug() << "KeeperPlugin: clients acquired";
             }
+            advanceQueue();
+            // Resume tx hash polling for log entries that have a collection CID but no tx hash yet
+            // (handles crash/restart while "confirming…")
+            for (const auto& obj : std::as_const(log_)) {
+                QString id     = obj["id"].toString();
+                QString cid    = obj["collectionCid"].toString();
+                QString txHash = obj["txHash"].toString();
+                if (!id.isEmpty() && !cid.isEmpty() && txHash.isEmpty()) {
+                    QString idCopy  = id;
+                    QString cidCopy = cid;
+                    QTimer::singleShot(3000, this, [this, idCopy, cidCopy]() {
+                        pollForTxHash(idCopy, cidCopy, 72);
+                    });
+                }
+            }
+        } catch (const std::exception& e) {
+            qCritical() << "KeeperPlugin: deferred init threw:" << e.what();
+        } catch (...) {
+            qCritical() << "KeeperPlugin: deferred init threw unknown exception";
         }
     });
     qDebug() << "KeeperPlugin: initialized";

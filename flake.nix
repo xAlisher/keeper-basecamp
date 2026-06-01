@@ -11,10 +11,10 @@
       src = ./.;
       configFile = ./metadata.json;
       flakeInputs = inputs;
-      # libQt6HttpServer, libQt6WebSockets, libQt6RemoteObjects are not included
-      # in the Basecamp AppImage — bundle all three explicitly.
+      # libQt6HttpServer and libQt6WebSockets are not in the Basecamp AppImage — bundle them.
+      # libQt6RemoteObjects IS in the AppImage; do NOT bundle it (double-loading causes heap corruption).
       postInstall = ''
-        for mod in Qt6HttpServer Qt6WebSockets Qt6RemoteObjects; do
+        for mod in Qt6HttpServer Qt6WebSockets; do
           libdir=$(pkg-config --variable=libdir $mod 2>/dev/null || true)
           [ -z "$libdir" ] && continue
           soname="lib''${mod}.so.6"
