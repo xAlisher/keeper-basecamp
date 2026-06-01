@@ -72,7 +72,7 @@ pub struct PreservationRecord {
 ```
 
 ### `DisputeRecord`
-Created automatically when a hash mismatch is detected.
+Created explicitly by the challenger via `open_dispute` after an item is flagged Suspicious.
 
 ```rust
 #[account_type]
@@ -120,6 +120,17 @@ pub struct TokenBalance {
 }
 ```
 
+### `PreserverRegistry`
+Singleton. Holds the ordered list of all preserver `AccountId`s.
+`create_user` appends to it; enables leaderboard enumeration without an off-chain indexer.
+
+```rust
+#[account_type]
+pub struct PreserverRegistry {
+    pub preservers: Vec<AccountId>,
+}
+```
+
 ---
 
 ## PDA Layout
@@ -131,14 +142,43 @@ pub struct TokenBalance {
 | `dispute::{ia_id}` | `[literal("dispute"), arg("ia_id")]` | disputed item |
 | `stats::{user}` | `[literal("stats"), account("user")]` | user |
 | `balance::{user}` | `[literal("balance"), account("user")]` | user |
+| `registry` | `[literal("registry")]` | singleton |
 
 ---
 
 ## Instructions
 
+### `create_user`
+
+One-time setup. Creates the `UserStats` and `TokenBalance` PDAs for a new preserver
+and appends the user's `AccountId` to the global `PreserverRegistry`.
+Keeper calls this on first launch. `#[account(init)]` on stats/balance rejects a
+second call — the client ignores `AccountAlreadyInitialized` for this instruction.
+
+```rust
+#[instruction]
+pub fn create_user(
+    #[account(init, pda = [literal("stats"), account("user")])]
+    stats: AccountWithMetadata,
+
+    #[account(init, pda = [literal("balance"), account("user")])]
+    balance: AccountWithMetadata,
+
+    #[account(mut, pda = [literal("registry")])]
+    registry: AccountWithMetadata,
+
+    #[account(signer)]
+    user: AccountWithMetadata,
+) -> SpelResult
+// Logic: registry.preservers.push(user.account_id)
+```
+
+---
+
 ### `register_preservation`
 
 Core instruction. Handles both first and subsequent preservers.
+Requires `create_user` to have been called first for this preserver.
 
 ```rust
 #[instruction]
@@ -153,10 +193,11 @@ pub fn register_preservation(
     #[account(signer)]
     preserver: AccountWithMetadata,
 
-    #[account(init, pda = [literal("stats"), account("preserver")])]
+    // mut — accounts created separately via create_user
+    #[account(mut, pda = [literal("stats"), account("preserver")])]
     stats: AccountWithMetadata,
 
-    #[account(init, pda = [literal("balance"), account("preserver")])]
+    #[account(mut, pda = [literal("balance"), account("preserver")])]
     balance: AccountWithMetadata,
 
     ia_id:          String,
@@ -165,6 +206,7 @@ pub fn register_preservation(
     merkle_root:    [u8; 32],
     file_count:     u32,
     total_bytes:    u64,
+    block_number:   u64,        // submitted by Keeper client; trust-based until LEZ exposes it natively
 ) -> SpelResult
 ```
 
@@ -173,6 +215,7 @@ pub fn register_preservation(
 ```
 if item does not exist yet (first_preserver == default):
     → set canonical hashes
+    → item.block = block_number
     → stats.first_preserved_count += 1
     → stats.total_bytes_preserved += total_bytes
     → mint full reward
@@ -193,7 +236,7 @@ else:
         → item.mismatch_count += 1
         → item.status = Suspicious
         → no reward
-        → create DisputeRecord if not already open
+        → (caller must follow with open_dispute for a formal DisputeRecord)
 ```
 
 ---
@@ -218,7 +261,8 @@ pub fn open_dispute(
     #[account(pda = [literal("pres"), account("challenger"), arg("ia_id")])]
     challenger_record: AccountWithMetadata,
 
-    ia_id: String,
+    ia_id:        String,
+    block_number: u64,   // submitted by Keeper client
 ) -> SpelResult
 ```
 
@@ -417,11 +461,11 @@ pub fn verify_holding(
     #[account(mut, pda = [literal("pres"), account("preserver"), arg("ia_id")])]
     record: AccountWithMetadata,
 
-    ia_id: String,
+    ia_id:        String,
+    block_number: u64,   // submitted by Keeper client
 ) -> SpelResult {
     // preserver signs this tx — proof their node responded to exists() check
-    // update record.last_verified_block = current_block
-    // update item.last_verified_block   = current_block
+    // update record.last_verified_block = block_number
     // if gap since last verification > DELINQUENCY_THRESHOLD → status = Delinquent
 }
 ```
@@ -533,7 +577,7 @@ let severity = match (metadata_diverges, merkle_diverges, cid_diverges) {
 };
 ```
 
-`High` and `Medium` → `item.status = Suspicious` + `DisputeRecord` created automatically.
+`High` and `Medium` → `item.status = Suspicious`; preserver must follow with `open_dispute` to create a formal `DisputeRecord`.
 `Low` → logged in `PreservationRecord.matches_canonical = false`, no escalation.
 
 ---
@@ -541,7 +585,8 @@ let severity = match (metadata_diverges, merkle_diverges, cid_diverges) {
 ## Leaderboards
 
 Both leaderboards read from the same `stats` PDA per user.
-Sort is off-chain — Keeper UI or any indexer reads all `stats` PDAs and sorts client-side.
+Enumeration: fetch the `registry` singleton PDA → get `Vec<AccountId>` → fetch each
+`stats` PDA → sort client-side. No off-chain indexer needed.
 
 ### Pioneer Board — `first_preserved_count` desc
 
@@ -621,7 +666,7 @@ Gaps found by comparing the design above against the SPEL framework source
 
 ### GAP 1 — `current_block` is not available inside handlers
 
-**Severity: High**
+**Severity: High — Status: Resolved**
 
 The doc uses `current_block` in `verify_holding` (`last_verified_block`) and in
 `register_preservation` (`ItemRecord.block`, `opened_at_block`). `ProgramContext`
@@ -630,27 +675,24 @@ only exposes `self_program_id` and `caller_program_id` (confirmed:
 shows `{ self_program_id, caller_program_id, pre_states, instruction }` — no block
 field.
 
-**Resolution:** pass `block_number: u64` as an explicit instruction argument,
-submitted by the Keeper client. The sequencer may independently validate it, but
-for now it is trust-based. Alternatively, drop per-block timestamps entirely and
-use wall-clock timestamps in the instruction args — same trust model, simpler.
+**Resolution applied:** `block_number: u64` added as an explicit argument to
+`register_preservation`, `open_dispute`, and `verify_holding`. Submitted by the
+Keeper client; trust-based until LEZ exposes it natively.
 
 ---
 
 ### GAP 2 — `#[account(init)]` on `stats` and `balance` fails on second call
 
-**Severity: High**
+**Severity: High — Status: Resolved**
 
-`register_preservation` declares `stats` and `balance` with `#[account(init)]`. The
+`register_preservation` declared `stats` and `balance` with `#[account(init)]`. The
 macro generates: `if accounts[idx].account != Account::default() { return Err(AccountAlreadyInitialized) }`. On a preserver's second registration (different item),
 both PDAs already exist with data — the instruction fails before the handler runs.
 
-**Resolution:** split into two instructions:
+**Resolution applied:** split into two instructions:
 
-- `create_user` — `#[account(init)]` on `stats` and `balance`; called once per user,
-  fails gracefully if already exists (caller just skips it).
-- `register_preservation` — `#[account(mut)]` on `stats` and `balance`; assumes they
-  exist.
+- `create_user` — `#[account(init)]` on `stats` and `balance`; called once per user.
+- `register_preservation` — `#[account(mut)]` on `stats` and `balance`; assumes they exist.
 
 Keeper calls `create_user` on first launch, then `register_preservation` for each item.
 
@@ -658,15 +700,15 @@ Keeper calls `create_user` on first launch, then `register_preservation` for eac
 
 ### GAP 3 — `DisputeRecord` cannot be created inside `register_preservation`
 
-**Severity: High**
+**Severity: High — Status: Resolved**
 
-The logic block says "create DisputeRecord if not already open" inside the handler.
+The logic block said "create DisputeRecord if not already open" inside the handler.
 In LEZ, all accounts that a handler writes must be declared as instruction parameters
 upfront — the macro only generates post-states for declared accounts. Creating a new
 PDA inside a handler body with no corresponding parameter is not possible.
 
-**Resolution:** remove auto-creation from `register_preservation`. The handler only
-sets `item.status = Suspicious` and `item.mismatch_count += 1`. Opening a formal
+**Resolution applied:** removed auto-creation from `register_preservation`. The handler
+only sets `item.status = Suspicious` and `item.mismatch_count += 1`. Opening a formal
 `DisputeRecord` is always an explicit separate call to `open_dispute` by the challenger.
 Auto-flagging is purely a status field on `ItemRecord`.
 
@@ -723,22 +765,18 @@ confirmation bonuses for that item. `UserStats` totals are not frozen globally.
 
 ### GAP 7 — Leaderboard enumeration has no on-chain solution
 
-**Severity: Medium**
+**Severity: Medium — Status: Resolved**
 
-The doc says "off-chain indexer reads all `stats` PDAs". But to compute a `stats` PDA
+The doc said "off-chain indexer reads all `stats` PDAs". But to compute a `stats` PDA
 address you need the preserver's `AccountId`. There is no `getAllAccounts` query on
 LEZ — there is no way to enumerate all `stats` PDAs without already knowing all
 preserver IDs.
 
-**Resolution (pick one):**
-
-- **Preserver registry account:** a singleton PDA `[literal("registry")]` holding a
-  `Vec<AccountId>` of all preservers. `create_user` appends to it. `Vec` size limits
-  apply — likely fine for early adoption, needs a pagination strategy at scale.
-- **Event indexing:** if LEZ emits events observable by off-chain listeners (not
-  confirmed in the framework), index `register_preservation` submissions off-chain.
-- **Known-set approach:** Keeper clients share a known list of preserver IDs via
-  Cord; leaderboard is best-effort based on discovered peers.
+**Resolution applied:** `PreserverRegistry` singleton PDA `[literal("registry")]`
+holds `Vec<AccountId>` of all preservers. `create_user` appends to it and passes it
+as a `#[account(mut)]` parameter (LEZ-legal — declared upfront). Leaderboard reads
+the registry to get all IDs, then fetches each `stats` PDA. `Vec` size limits apply;
+pagination strategy deferred until adoption warrants it.
 
 ---
 
