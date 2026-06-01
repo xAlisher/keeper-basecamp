@@ -102,7 +102,9 @@ All three paths are on-chain, transparent, and auditable. There is no applicatio
 
 ## Status
 
-Keeper Protocol is in design phase. The LEZ on-chain program is being specified against the SPEL smart contract framework on the Logos Execution Zone. The whitepaper reflects the current design; the technical specification is in `docs/keeper-protocol-lez.md`.
+Keeper Protocol is in design phase. The LEZ on-chain program is being specified against the SPEL smart contract framework on the Logos Execution Zone. The whitepaper reflects the current design; the full technical specification is in the design document:
+
+→ [Keeper Protocol — LEZ Program Design](keeper-protocol-lez.md)
 
 The Logos testnet is expected in 2026. Keeper Protocol targets deployment on testnet as an early demonstration of real-world incentivized preservation at the LEZ application layer.
 
