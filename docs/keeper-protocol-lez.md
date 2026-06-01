@@ -61,6 +61,11 @@ At any time (any node — challenge-response audit):
 
 The on-chain `ItemRecord` is the source of truth — not Beacon, not Cord.
 
+> **Instruction scope note:** The flowchart above shows the core use case (10 of 16 v1
+> instructions). Omitted for brevity: `initialize_program`, `open_dispute`,
+> `vote_on_dispute`, `deregister_user`, `deregister_item`, `migrate_score`.
+> See the Instructions section for the complete set.
+
 ## Dual Token Model
 
 | Layer | Token | Nature | Source | Use |
@@ -180,6 +185,10 @@ pub struct UserStats {
     pub active_bytes:          u64,    // bytes currently held Active — drives reward share
     pub last_block:            u64,
     pub is_deregistered:       bool,   // set by deregister_user; leaderboard enumeration skips this flag
+    // Internal ledger workaround (v1): accrued stable pending withdrawal.
+    // Populated by claim_monthly_reward and claim_item_bounty.
+    // Cleared by withdraw(). Remove when ChainedCall stable transfer is confirmed.
+    pub claimable_balance:     u128,
 }
 ```
 
@@ -600,6 +609,11 @@ pub fn challenge_holding(
 //   challenge.preserver_cleared = false
 ```
 
+> **Deployment constraint:** `challenge_spam_fee` must be set so that a winning challenger
+> is net-positive: `challenge_spam_fee ≤ holding_deposit_amount × challenge_bounty_bp / 10_000`.
+> If the spam fee exceeds the expected bounty, honest challengers lose money even on a win —
+> destroying the audit incentive. `initialize_program` should enforce this invariant.
+
 ---
 
 ### `finalize_challenge`
@@ -780,6 +794,12 @@ pub fn claim_item_bounty(
 If no active preservers hold the item, the bounty accumulates indefinitely — a growing
 incentive signal that attracts new preservers to that specific collection.
 
+> **Race condition note:** Multiple preservers claiming the same bounty in the same month
+> execute sequentially on-chain. Each claim decrements `bounty.balance` before the next
+> runs, so no claimant can receive more than their pro-rata share of the balance remaining
+> at the time their tx lands. Payout is therefore first-come-first-served within the
+> month rather than a guaranteed fixed share — acceptable for v1.
+
 ---
 
 ### `deregister_user`
@@ -841,13 +861,22 @@ pub fn deregister_item(
     ia_id: String,
 ) -> SpelResult
 // Logic:
+//   if ChallengeRecord exists for (user, ia_id) and !challenge.resolved:
+//     return Err(ChallengePending)        // prevent deposit escape while challenge open
 //   if record.verification_status == Active:
-//     item.total_active_bytes -= record.total_bytes   // update per-item counter
+//     stats.active_bytes          -= record.total_bytes   // *** must decrement or pool total drifts
+//     pool.total_active_bytes     -= record.total_bytes
+//     item.total_active_bytes     -= record.total_bytes
 //   deposit = record.holding_deposit
 //   transfer deposit stable from pool to user
 //   record.holding_deposit      = 0
 //   record.verification_status  = Delinquent          // item no longer maintained
 ```
+
+> **Integrity note:** `deregister_item` must decrement `stats.active_bytes` and
+> `pool.total_active_bytes` when the item is Active — otherwise the pool counter
+> inflates and rewards are misdistributed. The `ChallengePending` guard prevents the
+> deposit-escape attack (deregister before `finalize_challenge` claims the deposit).
 
 ---
 
@@ -889,6 +918,12 @@ pub fn migrate_score(
 //   registry.preservers.push(new_user.account_id)
 //   // old_user remains in registry for history; is_deregistered filters it from active leaderboard
 ```
+
+> **Atomicity:** Both `old_user` and `new_user` must sign the same transaction — LEZ
+> enforces this via `#[account(signer)]` on both. Either both sign and the migration
+> executes atomically, or one refuses and the entire tx fails; there is no intermediate
+> state. The new identity should not register new items until the migration tx is confirmed
+> on-chain, as the old identity's `active_bytes` are not zeroed until that point.
 
 ---
 
@@ -1474,6 +1509,13 @@ as a `#[account(mut)]` parameter (LEZ-legal — declared upfront). Leaderboard r
 the registry to get all IDs, then fetches each `stats` PDA. `Vec` size limits apply;
 pagination strategy deferred until adoption warrants it.
 
+**Known limitation:** The registry only grows — `deregister_user` sets
+`is_deregistered = true` but does not remove the entry. A `Vec<AccountId>` of 32-byte
+entries can hold ~320,000 entries before hitting the LEZ account size limit (est. ~10 MB).
+At that point `create_user` will fail. v2 migration path: split into paginated accounts
+(`registry_0`, `registry_1`, …) or cap registration with `MaxPreserversReached` and
+document the upgrade path. For v1 launch volumes this is not a concern.
+
 ---
 
 ### GAP 8 — Slash mechanism is undefined
@@ -1617,7 +1659,7 @@ Remove `pda = ...` from `#[account]`. Declare the account as plain `#[account(in
 `compute_pda_multi()`:
 
 ```rust
-use spel_framework_core::pda::{compute_pda_multi, seed_from_str};
+use spel_framework_core::pda::{compute_pda, seed_from_str};
 
 #[instruction]
 pub fn register_preservation(
@@ -1627,9 +1669,13 @@ pub fn register_preservation(
     ia_id: String,
     ...
 ) -> SpelResult {
-    let expected = compute_pda_multi(
+    // AccountId does NOT implement ToSeed — use compute_pda() with raw [u8; 32] refs.
+    // AccountId is a [u8; 32]-compatible type from nssa_core; convert to bytes first.
+    // Exact conversion API TBD from nssa_core docs (likely .as_bytes() or .0).
+    let preserver_bytes: [u8; 32] = preserver.id().into();  // or .as_bytes().try_into()
+    let expected = compute_pda(
         &ctx.self_program_id,
-        &[&seed_from_str("pres"), &preserver.id().to_seed(), &ia_id.to_seed()],
+        &[&seed_from_str("pres"), &preserver_bytes, &ia_id.to_seed()],
     );
     if pres.id() != expected {
         return Err(SpelError::PdaMismatch { account_name: "pres".into(),
@@ -1639,7 +1685,12 @@ pub fn register_preservation(
 }
 ```
 
-`compute_pda_multi()` and the `sha256(s1 || s2 || ... || sN)` hash scheme are already in
+> **Note:** `AccountId` does not implement `ToSeed` in the current `spel-framework-core`
+> source. Use `compute_pda()` (takes `&[&[u8; 32]]`) directly, converting `AccountId` to
+> raw bytes first. The exact `AccountId → [u8; 32]` conversion depends on `nssa_core` API —
+> confirm with LEZ devs (likely `.into()` or `.0` for a newtype).
+
+`compute_pda()` and the `sha256(s1 || s2 || ... || sN)` hash scheme are already in
 `spel-framework-core/src/pda.rs`. The macro is the only missing piece. On-chain safety
 is identical to the constrained form — the IDL just won't encode seed metadata, so the
 generated C++ client must compute addresses itself using the same scheme.
@@ -1677,14 +1728,18 @@ logic is unaffected.
 
 | Phase | Instructions | Blocker workaround |
 |-------|--------------|--------------------|
-| **1 — Singletons** | `initialize_program`, `create_user`, `fund_pool` | `pool`/`registry` use single-literal seeds (work today); `stats` uses single-account seed (Workaround B) |
-| **2 — Core flow** | `register_preservation`, `verify_holding`, `claim_monthly_reward`, `deregister_item`, `deregister_user` | Manual PDA verification (Workaround A) + internal ledger (Workaround 2) |
+| **1 — Singletons** | `initialize_program`, `fund_pool` | `pool`/`registry` use single-literal seeds — work today; no multi-seed or ChainedCall |
+| **2 — Core flow** | `create_user`, `register_preservation`, `verify_holding`, `claim_monthly_reward`, `deregister_item`, `deregister_user` | Manual PDA verification (Workaround A) + internal ledger (Workaround 2) |
 | **3 — Audit + bounty** | `challenge_holding`, `finalize_challenge`, `create_item_bounty`, `fund_item_bounty`, `claim_item_bounty` | Manual PDA verification (Workaround A) + internal ledger |
 | **4 — Governance** | `open_dispute`, `vote_on_dispute`, `migrate_score` | Manual PDA verification (Workaround A) |
 | **Upgrade A** | Replace manual PDA checks with `pda = [...]` macro constraints | When `spel-framework/issues/1` lands |
 | **Upgrade B** | Replace `withdraw` internal ledger with `ChainedCall` to real stable token | When LEZ stable token API is confirmed |
 
-Phase 1 can start immediately with no upstream dependencies.
+> **Correction:** `create_user` uses `[literal("stats"), account("user")]` — a two-seed PDA —
+> so it requires Workaround A. Only `initialize_program` and `fund_pool` are truly
+> blocker-free today (both use single-literal seeds only).
+
+Phase 1 (`initialize_program`, `fund_pool`) can start immediately. Phase 2+ requires the manual PDA verification workaround.
 
 ---
 
