@@ -5,10 +5,12 @@ if(DEFINED ENV{LOGOS_MODULE_BUILDER_ROOT})
     include($ENV{LOGOS_MODULE_BUILDER_ROOT}/cmake/LogosModule.cmake)
 
     find_package(Qt6 REQUIRED COMPONENTS HttpServer)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(SODIUM REQUIRED IMPORTED_TARGET libsodium)
 
     logos_module(
         NAME keeper
-        LINK_LIBRARIES Qt6::HttpServer
+        LINK_LIBRARIES Qt6::HttpServer PkgConfig::SODIUM
         SOURCES
             src/keeper_interface.h
             src/keeper_plugin.h

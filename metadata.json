@@ -10,7 +10,7 @@
   "nix": {
     "packages": {
       "build": [],
-      "runtime": ["qt6.qthttpserver"]
+      "runtime": ["qt6.qthttpserver", "libsodium"]
     },
     "external_libraries": [],
     "cmake": {
