@@ -134,7 +134,7 @@ pub struct PreservationRecord {
 
 pub enum VerificationStatus {
     Pending,    // min_hold_blocks not yet elapsed — no reward contribution
-    Active,     // holding confirmed within DELINQUENCY_THRESHOLD — contributes to active_bytes
+    Active,     // holding confirmed within pool.delinquency_threshold — contributes to active_bytes
     Delinquent, // gap exceeded — removed from active_bytes until re-verified
 }
 ```
@@ -196,6 +196,7 @@ pub struct RewardPool {
     pub challenge_bounty_bp:         u32,    // % of holding_deposit paid to successful challenger
     pub challenge_response_window:   u64,    // blocks preserver has to respond to a challenge
     pub challenge_spam_fee:          u128,   // stable challenger must lock (lost if wrong)
+    pub delinquency_threshold:       u64,    // blocks since last_verified_block before status → Delinquent
     pub last_month:                  u32,    // last YYYYMM distributed
 }
 ```
@@ -270,13 +271,88 @@ pub struct SponsorBounty {
 | `stats::{user}` | `[literal("stats"), account("user")]` | user |
 | `claim::{user}::{month}` | `[literal("claim"), account("user"), arg("month")]` | (user, month) pair |
 | `bounty::{ia_id}` | `[literal("bounty"), arg("ia_id")]` | sponsored item |
+| `bclaim::{user}::{ia_id}::{month}` | `[literal("bclaim"), account("user"), arg("ia_id"), arg("month")]` | (user, item, month) bounty claim |
 | `challenge::{challenger}::{preserver}::{ia_id}` | `[literal("challenge"), account("challenger"), account("preserver"), arg("ia_id")]` | (challenger, preserver, item) |
 | `pool` | `[literal("pool")]` | singleton |
 | `registry` | `[literal("registry")]` | singleton |
 
 ---
 
+## Token Transfer Convention
+
+> **Open question for LEZ devs — required before implementation.**
+
+All instructions that move stable tokens use the notation:
+```
+transfer(from_account, to_account, amount)
+```
+
+The exact mechanism is **pending LEZ platform confirmation**. Depending on what LEZ
+exposes, this will resolve to one of:
+
+| Mechanism | What it means in practice |
+|-----------|--------------------------|
+| Native token transfer primitive | `SpelTransfer::stable(from, to, amount)` or equivalent built-in |
+| Token program CPI | Cross-program call to a standard token contract — requires `token_program` as an extra instruction account |
+| Account balance mutation | Direct write to a balance field on the sender/receiver accounts — only if the runtime enforces conservation |
+
+**Until confirmed, the doc uses `transfer(from, to, amount)` as a placeholder.**
+Instructions affected: `initialize_program` (none), `register_preservation`,
+`claim_monthly_reward`, `fund_pool`, `challenge_holding`, `finalize_challenge`,
+`fund_item_bounty`, `claim_item_bounty`, `deregister_item`.
+
+If the mechanism requires a `token_program` or similar extra account, every affected
+instruction signature gains one more `#[account]` parameter. This is a mechanical
+change — it does not affect any logic.
+
+---
+
 ## Instructions
+
+### `initialize_program`
+
+One-time deploy instruction. Creates the `RewardPool` singleton and the empty
+`PreserverRegistry`. Must be called once by the deployer before any other instruction.
+All config values can be updated later by the authority via a separate `update_config`
+instruction (v2); for v1 the values are set once at deploy time.
+
+```rust
+#[instruction]
+pub fn initialize_program(
+    #[account(init, pda = [literal("pool")])]
+    pool: AccountWithMetadata,
+
+    #[account(init, pda = [literal("registry")])]
+    registry: AccountWithMetadata,
+
+    #[account(signer)]
+    authority: AccountWithMetadata,
+
+    registration_fee:          u128,   // stable per register_preservation call
+    holding_deposit_amount:    u128,   // stable escrowed per item
+    max_user_share_bp:         u32,    // e.g. 2000 = 20% cap per user per month
+    min_hold_blocks:           u64,    // e.g. ~30 days of blocks before Pending → Active
+    delinquency_threshold:     u64,    // e.g. ~30 days of blocks; gap before Active → Delinquent
+    challenge_bounty_bp:       u32,    // e.g. 5000 = 50% of holding_deposit to challenger
+    challenge_response_window: u64,    // e.g. ~3 days of blocks for preserver to respond
+    challenge_spam_fee:        u128,   // stable challenger locks; lost if wrong
+) -> SpelResult
+// Logic:
+//   pool.fee_balance            = 0
+//   pool.total_active_bytes     = 0
+//   pool.registration_fee       = registration_fee
+//   pool.holding_deposit_amount = holding_deposit_amount
+//   pool.max_user_share_bp      = max_user_share_bp
+//   pool.min_hold_blocks        = min_hold_blocks
+//   pool.delinquency_threshold  = delinquency_threshold
+//   pool.challenge_bounty_bp    = challenge_bounty_bp
+//   pool.challenge_response_window = challenge_response_window
+//   pool.challenge_spam_fee     = challenge_spam_fee
+//   pool.last_month             = 0
+//   registry.preservers         = []
+```
+
+---
 
 ### `create_user`
 
@@ -604,7 +680,8 @@ pub fn create_item_bounty(
     #[account(signer)]
     sponsor: AccountWithMetadata,
 
-    ia_id: String,
+    ia_id:        String,
+    block_number: u64,
 ) -> SpelResult
 // Logic: bounty.ia_id = ia_id; bounty.balance = 0; bounty.block = block_number
 ```
@@ -628,8 +705,9 @@ pub fn fund_item_bounty(
     #[account(signer)]
     sponsor: AccountWithMetadata,
 
-    ia_id:  String,
-    amount: u128,   // stable to add to this item's bounty balance
+    ia_id:        String,
+    amount:       u128,   // stable to add to this item's bounty balance
+    block_number: u64,
 ) -> SpelResult
 // Logic:
 //   transfer amount stable from sponsor to bounty account
@@ -647,6 +725,10 @@ pro-rata by each preserver's contribution to that item's active storage. ⁴
 ```rust
 #[instruction]
 pub fn claim_item_bounty(
+    // init prevents double-claiming the same item's bounty for the same month
+    #[account(init, pda = [literal("bclaim"), account("user"), arg("ia_id"), arg("month")])]
+    bounty_claim: AccountWithMetadata,
+
     #[account(mut, pda = [literal("bounty"), arg("ia_id")])]
     bounty: AccountWithMetadata,
 
@@ -658,19 +740,23 @@ pub fn claim_item_bounty(
     record: AccountWithMetadata,
 
     // item — provides total_active_bytes denominator
-    #[account(mut, pda = [literal("item"), arg("ia_id")])]
+    #[account(pda = [literal("item"), arg("ia_id")])]
     item: AccountWithMetadata,
 
-    ia_id:  String,
-    month:  u32,    // YYYYMM — prevents double-claiming same month
+    ia_id: String,
+    month: u32,    // YYYYMM
 ) -> SpelResult
 // Logic:
 //   if record.verification_status != Active → return Err(NotActive)
 //   if bounty.balance == 0 → return Err(NoBalance)
 //   if item.total_active_bytes == 0 → return Err(NoActiveStorage)
-//   raw_payout   = bounty.balance × record.total_bytes / item.total_active_bytes
-//   transfer raw_payout stable from bounty to user
-//   bounty.balance -= raw_payout
+//   payout = bounty.balance × record.total_bytes / item.total_active_bytes
+//   transfer payout stable from bounty to user
+//   bounty.balance              -= payout
+//   bounty_claim.user            = user.account_id
+//   bounty_claim.ia_id           = ia_id
+//   bounty_claim.month           = month
+//   bounty_claim.amount          = payout
 ```
 
 If no active preservers hold the item, the bounty accumulates indefinitely — a growing
@@ -1037,7 +1123,7 @@ pub fn verify_holding(
     // record.last_verified_block = block_number
     //
     // new_status:
-    //   if gap > DELINQUENCY_THRESHOLD → Delinquent
+    //   if gap > pool.delinquency_threshold → Delinquent
     //   else if block_number - item.block < pool.min_hold_blocks → Pending  // new — under minimum hold
     //   else → Active
     //
