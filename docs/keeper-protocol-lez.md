@@ -342,7 +342,7 @@ fn compute_reward(file_count: u32, total_bytes: u64) -> u128 {
 | CID diverges only | 10% — logged, not penalized |
 | Merkle diverges | 0 — flagged suspicious |
 | Metadata diverges | 0 — dispute opened, stake at risk |
-| Dispute resolved in your favor | 50% of slashed tokens from losing party |
+| Dispute resolved in your favor | Social signal only (v1); token slashing deferred to v2 |
 
 ---
 
@@ -658,7 +658,7 @@ C++ bindings for all instructions directly from the IDL — no hand-written IPC 
 
 | Need | LEZ mechanism |
 |------|--------------|
-| First-inscriber atomicity | `#[account(init)]` on item PDA — tx fails if PDA already exists |
+| First-inscriber atomicity | Handler checks `first_preserver == AccountId::default()` on `#[account(mut)]` item — first writer wins by blockchain ordering |
 | On-chain CID record | `ItemRecord` account — queryable by anyone, independent of Beacon |
 | Per-user stats | `UserStats` PDA — incremented on each registration |
 | Token balances | `TokenBalance` PDA — minted in-program, transferable |
@@ -787,31 +787,28 @@ pagination strategy deferred until adoption warrants it.
 
 ### GAP 8 — Slash mechanism is undefined
 
-**Severity: Low**
+**Severity: Low — Status: Resolved**
 
-The reward table says "50% of slashed tokens from losing party" on dispute resolution.
-No slash instruction or escrow mechanism is defined. There is no native stake/escrow
-primitive in the SPEL framework — it would need to be a custom escrow PDA created at
-registration time.
+The reward table referenced "50% of slashed tokens from losing party" on dispute
+resolution. No slash instruction or escrow mechanism was defined, and SPEL has no
+native stake/escrow primitive.
 
-**Resolution:** defer slashing to v2. For v1, dispute resolution simply updates
-`ItemRecord.status` and emits a social signal. Token slashing requires: a `stake`
-PDA holding locked tokens at registration, and a `resolve_dispute` instruction that
-redistributes from the loser's stake to the winner. Doable but a separate workstream.
+**Resolution applied:** reward table updated — dispute resolution is social signal
+only for v1. Slashing deferred to v2: requires a `stake` escrow PDA at registration
+time and a `resolve_dispute` instruction to redistribute tokens.
 
 ---
 
 ### GAP 9 — `What LEZ Handles` table is inconsistent with the instruction
 
-**Severity: Low**
+**Severity: Low — Status: Resolved**
 
-The table entry says: "First-inscriber atomicity: `#[account(init)]` on item PDA".
-But `register_preservation` declares item as `#[account(mut)]`, not `init`. The
-atomicity actually comes from blockchain transaction ordering — the first tx to write
-`first_preserver` wins; subsequent txs see a non-default state and take the other
-branch. The `init` guard is not used for item.
+The table said "First-inscriber atomicity: `#[account(init)]` on item PDA" but
+`register_preservation` declares item as `#[account(mut)]`. Atomicity comes from
+blockchain ordering — the first tx to write `first_preserver` wins; subsequent txs
+see a non-default value and take the other branch.
 
-**Resolution:** update the table entry to: "First-inscriber atomicity: handler checks
+**Resolution applied:** table entry corrected to "handler checks
 `first_preserver == AccountId::default()` on `#[account(mut)]` item — first writer
 wins by blockchain ordering."
 
