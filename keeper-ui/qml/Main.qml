@@ -18,12 +18,12 @@ Item {
     readonly property color borderColor:   "#383838"
 
     // ── State ─────────────────────────────────────────────────────────────
-    property bool   pollBusy:         false
-    property bool   bridgeRunning:    false
-    property int    bridgePort:       7355
-    property bool   pairingExpanded:  false
-    property int    pairedCount:      0
-    property string addFeedback:      ""
+    property bool   pollBusy:          false
+    property bool   bridgeRunning:     false
+    property int    bridgePort:        7355
+    property bool   settingsPanelOpen: false
+    property int    pairedCount:       0
+    property string addFeedback:       ""
 
     // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -157,7 +157,7 @@ Item {
         root.pollBusy = false
     }
 
-    // ── Timer ─────────────────────────────────────────────────────────────
+    // ── Timers ────────────────────────────────────────────────────────────
 
     Timer {
         interval: 2000
@@ -175,7 +175,6 @@ Item {
     Component.onCompleted: root.refresh()
 
     // Clipboard helper — zero-opacity TextEdit used to copy text to clipboard
-    // Must NOT be visible:false — invisible items can't receive focus needed for copy()
     TextEdit {
         id: clipboard
         opacity: 0
@@ -247,121 +246,59 @@ Item {
                     }
                 }
             }
-        }
 
-        // ── Input row ─────────────────────────────────────────────────────
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 8
-
+            // ⚙ Settings icon
             Rectangle {
-                Layout.fillWidth: true
-                height: 36
+                width: 28; height: 28
                 radius: 6
-                color: root.bgSecondary
-                border.color: urlField.activeFocus ? root.accentOrange : root.borderColor
+                color: gearArea.containsMouse ? root.bgSecondary : "transparent"
+                border.color: root.settingsPanelOpen ? root.accentOrange : root.borderColor
                 border.width: 1
-
-                TextField {
-                    id: urlField
-                    anchors.fill: parent
-                    anchors.margins: 4
-                    background: null
-                    color: root.textPrimary
-                    font.pixelSize: 12
-                    placeholderText: "archive.org/details/… or bare identifier"
-                    placeholderTextColor: root.textMuted
-                    onAccepted: keepBtn.doKeep()
-                }
-            }
-
-            Rectangle {
-                id: keepBtn
-                width: 64; height: 36
-                radius: 6
-                color: keepBtnArea.containsMouse ? "#CC4000" : root.accentOrange
-
-                function doKeep() {
-                    var val = urlField.text.trim()
-                    if (!val) return
-                    if (typeof logos === "undefined" || !logos.callModule) return
-                    logos.callModule("keeper", "preserveItem", [val])
-                    urlField.text = ""
-                    root.refresh()
-                }
+                Layout.alignment: Qt.AlignVCenter
 
                 Text {
                     anchors.centerIn: parent
-                    text: "Keep"
-                    font.pixelSize: 13
-                    font.bold: true
-                    color: root.textPrimary
+                    text: "⚙"
+                    font.pixelSize: 14
+                    color: root.settingsPanelOpen ? root.accentOrange : root.textSecondary
                 }
 
                 MouseArea {
-                    id: keepBtnArea
+                    id: gearArea
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: keepBtn.doKeep()
+                    onClicked: root.settingsPanelOpen = !root.settingsPanelOpen
                 }
             }
         }
 
-        // ── Paired Extensions ─────────────────────────────────────────────────
-        ColumnLayout {
+        // ── Settings panel ────────────────────────────────────────────────
+        Rectangle {
             Layout.fillWidth: true
-            spacing: 6
+            visible: root.settingsPanelOpen
+            height: settingsCol.implicitHeight + 20
+            color: root.bgSecondary
+            radius: 6
+            border.color: root.borderColor
+            border.width: 1
 
-            // Header row — always visible
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 8
+            ColumnLayout {
+                id: settingsCol
+                anchors { top: parent.top; left: parent.left; right: parent.right; margins: 10 }
+                spacing: 12
 
-                Text {
-                    text: "Paired Extensions"
-                    font.pixelSize: 13
-                    font.bold: true
-                    color: root.textPrimary
-                }
-
-                Text {
-                    visible: root.pairedCount > 0
-                    text: "(" + root.pairedCount + ")"
-                    font.pixelSize: 11
-                    color: root.textMuted
-                }
-
-                Item { Layout.fillWidth: true }
-
-                Text {
-                    text: root.pairingExpanded ? "▲" : "▼"
-                    font.pixelSize: 10
-                    color: pairingToggleArea.containsMouse ? root.textSecondary : root.textMuted
-
-                    MouseArea {
-                        id: pairingToggleArea
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            root.pairingExpanded = !root.pairingExpanded
-                            if (root.pairingExpanded) root.refreshPaired()
-                        }
-                    }
-                }
-            }
-
-            // Collapsible body — implicitHeight collapses cleanly in ColumnLayout
-            Item {
-                Layout.fillWidth: true
-                implicitHeight: root.pairingExpanded ? pairingBody.implicitHeight : 0
-                clip: true
-
+                // ── Paired Extensions ─────────────────────────────────────
                 ColumnLayout {
-                    id: pairingBody
-                    width: parent.width
+                    Layout.fillWidth: true
                     spacing: 6
+
+                    Text {
+                        text: "Paired Extensions"
+                        font.pixelSize: 12
+                        font.bold: true
+                        color: root.textSecondary
+                    }
 
                     // Add row
                     RowLayout {
@@ -372,7 +309,7 @@ Item {
                             Layout.fillWidth: true
                             height: 32
                             radius: 6
-                            color: root.bgSecondary
+                            color: root.bgPrimary
                             border.color: pubkeyField.activeFocus ? root.accentOrange : root.borderColor
                             border.width: 1
 
@@ -396,10 +333,14 @@ Item {
                             radius: 6
                             color: addPairedArea.containsMouse ? "#CC4000" : root.accentOrange
 
+                            // Issue #9 fix: set pollBusy=true before callModule so the
+                            // 2-second poll Timer cannot re-enter refresh() while this
+                            // callModule is blocking the JS thread.
                             function doAdd() {
                                 if (typeof logos === "undefined" || !logos.callModule) return
                                 var pk = pubkeyField.text.trim()
                                 if (!pk) return
+                                root.pollBusy = true
                                 var res = callModuleParse(
                                     logos.callModule("keeper", "addPairedExtension", [pk]))
                                 if (res && res.success === true) {
@@ -410,6 +351,7 @@ Item {
                                     root.addFeedback = (res && res.error) ? res.error : "Error"
                                 }
                                 feedbackTimer.restart()
+                                root.pollBusy = false
                             }
 
                             Text {
@@ -430,7 +372,7 @@ Item {
                         }
                     }
 
-                    // Inline feedback (success/error after Add)
+                    // Inline feedback (success/error, auto-dismisses after 2.5 s)
                     Text {
                         visible: root.addFeedback !== ""
                         text: root.addFeedback
@@ -444,7 +386,7 @@ Item {
                         Layout.fillWidth: true
                         implicitHeight: Math.max(40, Math.min(pairedList.contentHeight + 16, 112))
                         radius: 6
-                        color: root.bgSecondary
+                        color: root.bgPrimary
                         border.color: root.borderColor
                         border.width: 1
                         clip: true
@@ -506,6 +448,65 @@ Item {
                             }
                         }
                     }
+                }
+            }
+        }
+
+        // ── Input row ─────────────────────────────────────────────────────
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 8
+
+            Rectangle {
+                Layout.fillWidth: true
+                height: 36
+                radius: 6
+                color: root.bgSecondary
+                border.color: urlField.activeFocus ? root.accentOrange : root.borderColor
+                border.width: 1
+
+                TextField {
+                    id: urlField
+                    anchors.fill: parent
+                    anchors.margins: 4
+                    background: null
+                    color: root.textPrimary
+                    font.pixelSize: 12
+                    placeholderText: "archive.org/details/… or bare identifier"
+                    placeholderTextColor: root.textMuted
+                    onAccepted: keepBtn.doKeep()
+                }
+            }
+
+            Rectangle {
+                id: keepBtn
+                width: 64; height: 36
+                radius: 6
+                color: keepBtnArea.containsMouse ? "#CC4000" : root.accentOrange
+
+                function doKeep() {
+                    var val = urlField.text.trim()
+                    if (!val) return
+                    if (typeof logos === "undefined" || !logos.callModule) return
+                    logos.callModule("keeper", "preserveItem", [val])
+                    urlField.text = ""
+                    root.refresh()
+                }
+
+                Text {
+                    anchors.centerIn: parent
+                    text: "Keep"
+                    font.pixelSize: 13
+                    font.bold: true
+                    color: root.textPrimary
+                }
+
+                MouseArea {
+                    id: keepBtnArea
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: keepBtn.doKeep()
                 }
             }
         }
