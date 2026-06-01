@@ -46,17 +46,17 @@ At the end of each month, the protocol distributes rewards from a shared pool to
 
 ### The three actors
 
-**Preservers** are the nodes of the network. They download Internet Archive collections, store them on Logos Storage, and register their holdings on-chain. In return, they earn a monthly share of the reward pool proportional to how much data they are actively holding. Joining is free — the only cost is a refundable deposit per collection, returned when they exit cleanly.
+**Preservers** are the nodes of the network. They download Internet Archive collections, store them on Logos Storage, and register their holdings on-chain. In return, they earn `keeper_score` — a permanent on-chain record of their contribution — and, in the reward-enabled phase, a monthly share of the stable reward pool proportional to how much data they are actively holding. Joining is free.
 
 **Sponsors** are institutions, individuals, or foundations who believe specific collections matter. The Internet Archive, a university library, a museum, a community — anyone can fund a bounty for a specific collection. Preservers of that collection earn from the bounty in addition to the monthly pool. Sponsorship creates a direct economic signal: *this collection is worth preserving*.
 
-**The pool** is funded by two sources: registration fees paid by preservers when they register a new collection, and institutional top-ups from organizations like the Internet Archive, universities, or individual donors. The pool belongs to no one. It is a public resource that flows to whoever is doing the work.
+**The pool** is funded from three external sources: yield earned on escrowed preserver deposits (principal stays returnable; yield flows into rewards), institutional contributions from organizations like the Internet Archive, universities, or individual donors (`fund_pool` is permissionless), and challenge forfeitures when a preserver fails an audit after a grace period to re-prove possession. The pool belongs to no one. It is a public resource that flows to whoever is doing the work.
 
 ### Trust without permission
 
-A preserver's claim to be holding a collection is not taken on faith. Any third party can challenge it: submit an on-chain assertion that a collection's CID is unreachable on the Logos Storage network. The preserver then has a fixed window to prove otherwise. If they can — the challenge fails and the challenger loses their anti-spam fee. If they cannot — the preserver is marked delinquent, removed from the reward pool, and their deposit goes to the challenger as a bounty.
+A preserver's claim to be holding a collection is not taken on faith. Any third party can challenge it: submit an on-chain assertion that a collection's CID is unreachable on the Logos Storage network. The preserver then has a fixed window to prove otherwise — and a grace period to re-prove possession before any penalty applies, so the goal stays clean content, not punishment. If they respond — the challenge fails and the challenger's stake is forfeited. If they cannot — the preserver is marked delinquent, their deposit is slashed into the reward pool, and the challenger earns a capped bounty.
 
-This creates a market for auditing. It pays to catch cheaters. Over time, this economic pressure makes cheating unprofitable — not because everyone is watching all the time, but because anyone who tries to collect rewards without actually holding data risks losing more than they gain. This is an economic deterrent, not a cryptographic proof; cryptographic verification is a v2 target.
+This creates a market for auditing. It pays to catch cheaters. The bounty is deliberately modest — enough to reward the catch, not enough to make hunting failures a business model. Over time, this economic pressure makes cheating unprofitable — not because everyone is watching all the time, but because anyone who tries to collect rewards without actually holding data risks losing more than they gain. This is an economic deterrent, not a cryptographic proof; cryptographic verification is a future target.
 
 ### A record that cannot be taken from you
 
@@ -68,7 +68,7 @@ Every preservation act is recorded permanently on-chain as `keeper_score` — a 
 
 Decentralized storage protocols have existed for years. Filecoin, Arweave, Storj — all functional, all growing. None of them are focused on cultural preservation. They are storage markets or investment vehicles. Keeper is neither.
 
-**The reward is stable.** Protocols that pay preservers in their own token create a feedback loop: when token price drops, preservers leave; when preservers leave, service degrades; when service degrades, the token drops further. Keeper pays preservers in stable — the registration fees they paid in cycle back as monthly rewards. No speculative token. A library or university can calculate their expected return with the same certainty as a utility bill.
+**The reward is stable.** Protocols that pay preservers in their own token create a feedback loop: when token price drops, preservers leave; when preservers leave, service degrades; when service degrades, the token drops further. Keeper pays preservers in stable, sourced from outside the system — deposit yield, institutional contributions, and challenge forfeitures. No speculative token. No closed loop where rewards can never exceed total stake. A library or university can calculate their expected return with the same certainty as a utility bill.
 
 **The mission is specific.** Keeper is not a general-purpose storage market. Every collection in the system is an Internet Archive collection with a stable identifier, verified metadata, and a content hash. This specificity is a feature: preservers know exactly what they are preserving, sponsors know exactly what they are funding, and auditors know exactly what to check.
 
