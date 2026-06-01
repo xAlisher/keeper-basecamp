@@ -41,7 +41,7 @@ At any time (institutions / foundation):
   → keeper_protocol::fund_pool(amount)
       → caller transfers `amount` stable directly to RewardPool.fee_balance
       → no keeper_score, no registration — purely a pool top-up
-      → open to anyone: Logos Foundation, Internet Archive, donors, grants
+      → open to anyone: Internet Archive, donors, grants, universities
 
 At any time (sponsors / institutions):
   → keeper_protocol::create_item_bounty(ia_id)      ← first time only
@@ -690,7 +690,7 @@ pub fn finalize_challenge(
 
 ### `fund_pool`
 
-Open institutional entry point. Any party — Logos Foundation, Internet Archive, grant
+Open institutional entry point. Any party — Internet Archive, grant
 programs, or individual donors — can top up the reward pool directly without joining as
 a preserver. The caller receives no `keeper_score` and no `PreservationRecord`; this is
 a pure economic contribution.
@@ -1064,7 +1064,7 @@ others to fill the gap. The pool self-balances.
 - **Registration fees** — every `register_preservation` call transfers `registration_fee`
   stable to the pool. More preservation activity = larger pool.
 - **Institutional grants** — `fund_pool` accepts any stable transfer from any party.
-  Logos Foundation, Internet Archive, or grant programs can top up the pool directly
+  Internet Archive, universities, or grant programs can top up the pool directly
   at any time. No membership required — just a signed transaction.
 - **Item bounties** — `fund_item_bounty` deposits accumulate in per-item `SponsorBounty`
   PDAs and are distributed as an additional top-up to preservers of that item.
@@ -1075,7 +1075,7 @@ joins for zero reward, killing the fee flywheel. Mitigation:
 
 | Phase | Mechanism |
 |-------|-----------|
-| Genesis | Logos Foundation calls `fund_pool` with a committed minimum seed (recommend ≥ 6 months of estimated rewards at target participation) |
+| Genesis | Project team or early sponsors call `fund_pool` with a committed minimum seed (recommend ≥ 6 months of estimated rewards at target participation) |
 | Month 1–6 | Internet Archive (or Logos) calls `fund_pool` monthly on a public schedule — predictable reward for early preservers |
 | Month 7+ | Registration fees self-sustain if ≥ N active preservers; foundation role shrinks to emergency top-up |
 
@@ -1449,7 +1449,7 @@ C++ bindings for all instructions directly from the IDL — no hand-written IPC 
 | On-chain CID record | `ItemRecord` account — queryable by anyone, independent of Beacon |
 | Per-user stats + soulbound score | `UserStats` PDA — `keeper_score` (leaderboard) and `active_bytes` (reward share) |
 | Fee-funded reward pool | `register_preservation` charges `registration_fee` + `holding_deposit` per call |
-| Institutional pool funding | `fund_pool` — permissionless top-up; open to Logos Foundation, Internet Archive, grants, donors |
+| Institutional pool funding | `fund_pool` — permissionless top-up; open to Internet Archive, grants, donors, universities |
 | Monthly stable reward | `claim_monthly_reward` transfers stable pro-rata by active_bytes; hard cap per user |
 | Holding accountability | Per-item `holding_deposit` escrowed; forfeited via `finalize_challenge` if preserver fails challenge |
 | Third-party audit incentive | `challenge_holding` + `finalize_challenge` — challenger earns bounty for catching delinquent node |

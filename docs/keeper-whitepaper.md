@@ -50,7 +50,7 @@ At the end of each month, the protocol distributes rewards from a shared pool to
 
 **Sponsors** are institutions, individuals, or foundations who believe specific collections matter. The Internet Archive, a university library, a museum, a community — anyone can fund a bounty for a specific collection. Preservers of that collection earn from the bounty in addition to the monthly pool. Sponsorship creates a direct economic signal: *this collection is worth preserving*.
 
-**The pool** is funded by two sources: registration fees paid by preservers when they register a new collection, and institutional top-ups from organizations like the Logos Foundation or the Internet Archive itself. The pool belongs to no one. It is a public resource that flows to whoever is doing the work.
+**The pool** is funded by two sources: registration fees paid by preservers when they register a new collection, and institutional top-ups from organizations like the Internet Archive, universities, or individual donors. The pool belongs to no one. It is a public resource that flows to whoever is doing the work.
 
 ### Trust without permission
 
@@ -74,7 +74,7 @@ Decentralized storage protocols have existed for years. Filecoin, Arweave, Storj
 
 **The identity layer is permanent.** `keeper_score` cannot be stripped by a platform ban, a company acquisition, or a change in terms of service. A preserver who contributes for ten years carries that record in the chain's history regardless of what happens to any institution or service.
 
-**Institutions can participate directly.** The `fund_pool` instruction is permissionless — the Internet Archive, the Logos Foundation, a university endowment, or any individual can top up the reward pool at any time. The `fund_item_bounty` instruction lets them express preference: *this specific collection matters to us*. This is a direct economic relationship between those who value preservation and those who do the preserving, with no intermediary taking a cut.
+**Institutions can participate directly.** The `fund_pool` instruction is permissionless — the Internet Archive, a university endowment, or any individual can top up the reward pool at any time. The `fund_item_bounty` instruction lets them express preference: *this specific collection matters to us*. This is a direct economic relationship between those who value preservation and those who do the preserving, with no intermediary taking a cut.
 
 ---
 
