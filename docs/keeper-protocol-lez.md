@@ -9,19 +9,31 @@ Logos service for its core guarantees.
 ## Overview
 
 ```
-User preserves IA item
+User joins:
+  → deposits fixed stable → keeper_protocol::stake_to_join()
+      → UserStake PDA created
+      → stable added to RewardPool.total_staked
+      → create_user() called → UserStats initialised, added to registry
+
+User preserves IA item:
   → Keeper downloads files
   → Stash uploads to IPFS → collection CID
   → keeper_protocol::register_preservation(ia_id, cid, hashes, ...)
       → ItemRecord PDA (first-write atomic — first preserver wins)
       → PreservationRecord PDA (per-user per-item)
-      → UserStats.keeper_score incremented (soulbound — never transfers)
-  → Subsequent preservers: confirmed or flagged suspicious
+      → UserStats.keeper_score incremented (soulbound, leaderboard only)
+
+Every 7 days per item:
+  → keeper_protocol::verify_holding()
+      → record.verification_status = Active or Delinquent
+      → UserStats.active_bytes and RewardPool.total_active_bytes updated
 
 End of each month:
   → keeper_protocol::claim_monthly_reward(month)
-      → reads keeper_score snapshot
-      → mints economic reward tokens proportional to share of total score
+      → pool_budget       = RewardPool.total_staked × monthly_rate
+      → reward_per_byte   = pool_budget / RewardPool.total_active_bytes
+      → user_payout       = min(user.active_bytes × reward_per_byte, pool_budget × max_user_share)
+      → stable transferred from RewardPool to user
       → RewardClaim PDA created (claimed = true for this month)
 ```
 
@@ -29,14 +41,16 @@ The on-chain `ItemRecord` is the source of truth — not Beacon, not Cord.
 
 ## Dual Token Model
 
-Two separate tokens with separate properties:
+| Layer | Token | Nature | Source | Use |
+|-------|-------|--------|--------|-----|
+| **Reputation** | `keeper_score` | Soulbound, non-transferable | Earned by preserving items | Leaderboard, dispute voting weight, determines monthly reward **share** |
+| **Economic** | Stable (configurable at deploy) | Transferable, real value | User deposits to join | Funds the reward pool; paid out monthly in the same stable |
 
-| Token | Type | Purpose | Transferable |
-|-------|------|---------|-------------|
-| **Keeper Score** | Soulbound, on-chain `UserStats.keeper_score` | Leaderboard ranking, dispute voting weight, monthly reward share calculation | No — permanently bound to the earning account |
-| **Economic Reward** (`$KEEP`) | Standard transferable token | Monthly payout — can be sold, traded, used in other programs | Yes |
+**`keeper_score` is not a financial asset.** It has no price, no market, no transfer. It is a permanent on-chain record of preservation work — like a credit score. It cannot be bought.
 
-Separating them means the leaderboard and voting weight can never be bought. Economic value is preserved via monthly distribution.
+**Stable is the only money in the system.** Deposit stable → earn stable yield. How much yield you earn is determined by your `keeper_score` share and how many bytes you are actively holding right now.
+
+The stable token address is a program constant set at deployment — USDC, a Logos native stable, or any compatible token.
 
 ---
 
@@ -121,23 +135,53 @@ pub struct UserStats {
     pub total_bytes_preserved: u64,    // leaderboard 2: archive board
     pub confirmed_count:       u64,    // confirmed other users' items
     pub mismatch_count:        u32,    // reputation penalty source
-    pub keeper_score:          u128,   // soulbound — accumulates forever, never transfers
+    pub keeper_score:          u128,   // soulbound — accumulates forever, leaderboard only
+    pub active_bytes:          u64,    // bytes currently held Active — drives reward share
     pub last_block:            u64,
 }
 ```
 
+### `UserStake`
+One per user. Records the stable deposit that entitles the user to participate and earn.
+
+```rust
+#[account_type]
+pub struct UserStake {
+    pub user:         AccountId,
+    pub amount:       u128,   // stable deposited (fixed at join time)
+    pub joined_block: u64,
+    pub locked_until: u64,    // block after which withdraw_stake is allowed
+}
+```
+
+### `RewardPool`
+Singleton. Tracks the pool balance and the network-wide active bytes counter used
+for reward computation. Updated incrementally by `verify_holding`.
+
+```rust
+#[account_type]
+pub struct RewardPool {
+    pub total_staked:       u128,   // sum of all UserStake.amount
+    pub total_active_bytes: u128,   // sum of active_bytes across all preservers
+    pub monthly_rate_bp:    u32,    // basis points, e.g. 500 = 5% monthly
+    pub max_user_share_bp:  u32,    // basis points cap per user, e.g. 2000 = 20%
+    pub min_hold_blocks:    u64,    // blocks before new item contributes to active_bytes
+    pub last_month:         u32,    // last YYYYMM distributed
+}
+```
+
 ### `RewardClaim`
-One per `(user, month)`. Tracks whether a user has claimed their monthly economic reward.
+One per `(user, month)`. Tracks whether a user has claimed their monthly stable reward.
 `month` is a `u32` in `YYYYMM` format (e.g. `202607`).
 
 ```rust
 #[account_type]
 pub struct RewardClaim {
-    pub user:         AccountId,
-    pub month:        u32,
-    pub score_snapshot: u128,  // keeper_score at time of claim
-    pub amount:       u128,    // economic tokens minted this claim
-    pub claimed:      bool,
+    pub user:                AccountId,
+    pub month:               u32,
+    pub active_bytes_snapshot: u64,   // user.active_bytes at time of claim
+    pub amount:              u128,    // stable transferred this claim
+    pub claimed:             bool,
 }
 ```
 
@@ -162,19 +206,88 @@ pub struct PreserverRegistry {
 | `pres::{preserver}::{ia_id}` | `[literal("pres"), account("preserver"), arg("ia_id")]` | (user, item) pair |
 | `dispute::{ia_id}` | `[literal("dispute"), arg("ia_id")]` | disputed item |
 | `stats::{user}` | `[literal("stats"), account("user")]` | user |
+| `stake::{user}` | `[literal("stake"), account("user")]` | user |
 | `claim::{user}::{month}` | `[literal("claim"), account("user"), arg("month")]` | (user, month) pair |
+| `pool` | `[literal("pool")]` | singleton |
 | `registry` | `[literal("registry")]` | singleton |
 
 ---
 
 ## Instructions
 
+### `stake_to_join`
+
+Entry point for new preservers. Deposits a fixed amount of stable into the `RewardPool`,
+creates a `UserStake` record, then calls `create_user` to initialise stats and add the
+user to the registry. The stable amount is fixed at the value set in the program constants
+(`STAKE_AMOUNT`). Lock period (`LOCK_BLOCKS`) prevents immediate withdrawal.
+
+```rust
+#[instruction]
+pub fn stake_to_join(
+    #[account(init, pda = [literal("stake"), account("user")])]
+    stake: AccountWithMetadata,
+
+    #[account(init, pda = [literal("stats"), account("user")])]
+    stats: AccountWithMetadata,
+
+    #[account(mut, pda = [literal("pool")])]
+    pool: AccountWithMetadata,
+
+    #[account(mut, pda = [literal("registry")])]
+    registry: AccountWithMetadata,
+
+    #[account(signer)]
+    user: AccountWithMetadata,
+
+    block_number: u64,
+) -> SpelResult
+// Logic:
+//   transfer STAKE_AMOUNT stable from user to pool account
+//   stake.amount       = STAKE_AMOUNT
+//   stake.joined_block = block_number
+//   stake.locked_until = block_number + LOCK_BLOCKS
+//   pool.total_staked += STAKE_AMOUNT
+//   stats initialised to zero
+//   registry.preservers.push(user.account_id)
+```
+
+---
+
+### `withdraw_stake`
+
+Returns the user's stable deposit after the lock period. The user's `keeper_score`
+and preservation history remain on-chain permanently — only the economic stake is returned.
+
+```rust
+#[instruction]
+pub fn withdraw_stake(
+    #[account(mut, pda = [literal("stake"), account("user")])]
+    stake: AccountWithMetadata,
+
+    #[account(mut, pda = [literal("pool")])]
+    pool: AccountWithMetadata,
+
+    #[account(signer)]
+    user: AccountWithMetadata,
+
+    block_number: u64,
+) -> SpelResult
+// Logic:
+//   if block_number < stake.locked_until → return Err(StillLocked)
+//   transfer stake.amount stable from pool to user
+//   pool.total_staked -= stake.amount
+//   pool.total_active_bytes -= user.active_bytes  // no longer contributing
+//   stake.amount = 0
+```
+
+---
+
 ### `create_user`
 
-One-time setup. Creates the `UserStats` PDA for a new preserver and appends the user's
-`AccountId` to the global `PreserverRegistry`. Keeper calls this on first launch.
-`#[account(init)]` on stats rejects a second call — the client ignores
-`AccountAlreadyInitialized` for this instruction.
+Called internally by `stake_to_join`. Can also be called standalone to re-initialise
+after an incomplete setup. `#[account(init)]` on stats rejects a duplicate call — safe
+to call again and ignore `AccountAlreadyInitialized`.
 
 ```rust
 #[instruction]
@@ -309,9 +422,9 @@ pub fn vote_on_dispute(
 
 ### `claim_monthly_reward`
 
-Called once per month per user to mint economic `$KEEP` tokens proportional to their
-`keeper_score` share. Creates a `RewardClaim` PDA — `#[account(init)]` prevents double
-claiming the same month.
+Called once per month per user. Transfers stable from `RewardPool` proportional to
+the user's `active_bytes` share of the network total. `#[account(init)]` on the claim
+PDA prevents double claiming the same month.
 
 ```rust
 #[instruction]
@@ -325,49 +438,61 @@ pub fn claim_monthly_reward(
     #[account(pda = [literal("stats"), account("user")])]
     stats: AccountWithMetadata,
 
-    #[account(mut, pda = [literal("registry")])]
-    registry: AccountWithMetadata,
+    #[account(pda = [literal("stake"), account("user")])]
+    stake: AccountWithMetadata,    // must exist — only stakers can claim
+
+    #[account(mut, pda = [literal("pool")])]
+    pool: AccountWithMetadata,
 
     month: u32,   // YYYYMM — e.g. 202607
 ) -> SpelResult
 // Logic:
-//   total_score = sum of keeper_score across all registry preservers
-//   user_share  = stats.keeper_score / total_score
-//   reward      = MONTHLY_POOL * user_share
-//   claim.score_snapshot = stats.keeper_score
-//   claim.amount         = reward
-//   claim.claimed        = true
-//   → mint reward $KEEP tokens to user (via reward token program call)
+//   if stake.amount == 0 → return Err(NotAStaker)
+//   pool_budget    = pool.total_staked × pool.monthly_rate_bp / 10_000
+//   if pool.total_active_bytes == 0 → return Err(NoActiveStorage)
+//   reward_per_byte = pool_budget / pool.total_active_bytes
+//   raw_reward      = stats.active_bytes as u128 × reward_per_byte
+//   cap             = pool_budget × pool.max_user_share_bp / 10_000
+//   payout          = min(raw_reward, cap)
+//   transfer payout stable from pool to user
+//   claim.active_bytes_snapshot = stats.active_bytes
+//   claim.amount                = payout
+//   claim.claimed               = true
 ```
 
-The `MONTHLY_POOL` size and the `$KEEP` token program address are program constants
-set at deployment. Unclaimed months do not roll over — the pool resets each month.
+Unclaimed months are not carried forward — the pool interest accrues into next month's budget.
+Pool principal (`total_staked`) is never distributed; only the periodic interest is.
 
 ---
 
 ## Keeper Score Formula
 
-`keeper_score` is the soulbound on-chain metric. It accumulates with every preservation,
-never decreases, and never transfers. It drives leaderboard ranking, dispute voting
-weight, and monthly economic reward share.
+`keeper_score` is the soulbound leaderboard metric. It accumulates with every preservation,
+never decreases, and never transfers. It drives leaderboard ranking and dispute voting
+weight. **It does not directly determine economic reward** — that is driven by `active_bytes`.
+
+Square-root scaling on the size component prevents any single large preserver from
+dominating the leaderboard:
 
 ```rust
 fn compute_score(file_count: u32, total_bytes: u64) -> u128 {
     let base:        u128 = 100;
     let mb                = (total_bytes as u128) / 1_000_000;
-    let size_score:  u128 = mb * 10;                  // 10 points per MB
+    let size_score:  u128 = isqrt(mb) * 100;          // sqrt — diminishing returns for large sets
     let file_bonus:  u128 = file_count as u128 * 5;   // 5 points per file
     base + size_score + file_bonus
 }
 ```
 
-**Score examples:**
+**Sqrt effect — leaderboard fairness:**
 
-| Collection | Files | Size | Score |
-|------------|-------|------|-------|
-| Small text archive | 3 | 10 MB | 215 |
-| Film with metadata | 12 | 800 MB | 8,160 |
-| Full video collection | 50 | 1 GB | 10,590 |
+| Data | Linear score | Sqrt score | Ratio vs 10 MB |
+|------|-------------|------------|----------------|
+| 10 MB | 100 | 316 | 1× |
+| 1 GB | 10,000 | 3,162 | 10× |
+| 1 TB | 10,000,000 | 100,000 | 316× |
+
+A 1 TB preserver scores 316× a 10 MB preserver — not 100,000×. Small preservers remain competitive.
 
 **Score by scenario:**
 
@@ -378,29 +503,57 @@ fn compute_score(file_count: u32, total_bytes: u64) -> u128 {
 | CID diverges only | 10% — logged, not penalized |
 | Merkle diverges | 0 — flagged suspicious |
 | Metadata diverges | 0 — dispute opened |
-| Dispute resolved in your favor | Social signal only (v1); score boost deferred to v2 |
+| Dispute resolved in your favor | Social signal only (v1) |
 
 ## Monthly Economic Reward
 
-At the end of each month, preservers call `claim_monthly_reward` to receive transferable
-`$KEEP` tokens. The reward is proportional to their share of total `keeper_score` across
-all preservers.
+Monthly stable payout is based on **active storage right now**, not cumulative score.
+This means reward tracks ongoing storage cost and stops immediately when holding stops.
+
+### Reward formula
 
 ```
-user_reward = MONTHLY_POOL × (user.keeper_score / total_keeper_score)
+pool_budget     = RewardPool.total_staked × monthly_rate_bp / 10_000
+reward_per_byte = pool_budget / RewardPool.total_active_bytes   ← auto-balancing
+raw_reward      = user.active_bytes × reward_per_byte
+user_payout     = min(raw_reward, pool_budget × max_user_share_bp / 10_000)
 ```
 
-**Example — 1,000,000 $KEEP monthly pool:**
+`reward_per_byte` is not set manually — it floats with the market. If total preserved
+data doubles, reward per byte halves. If few people preserve, rate rises — incentivising
+others to fill the gap. The pool self-balances.
 
-| User | Keeper Score | Share | Monthly $KEEP |
-|------|-------------|-------|--------------|
-| alice | 340,000 | 34% | 340,000 |
-| bob | 500,000 | 50% | 500,000 |
-| carol | 160,000 | 16% | 160,000 |
+### Balancing properties
 
-`$KEEP` is a standard transferable token — it can be sold, traded, or used in other
-Logos programs. It has no influence over the leaderboard or voting weight, which are
-driven exclusively by the soulbound `keeper_score`.
+| Risk | Mechanism |
+|------|-----------|
+| Whale dumps TBs and drains pool | 30-day `min_hold_blocks` before item enters `active_bytes`; sqrt score on leaderboard |
+| User stops holding and still earns | `active_bytes` drops to 0 when Delinquent → payout = 0 |
+| One user takes all rewards | Hard cap `max_user_share_bp` (e.g. 20%) |
+| Pool depleted | Only pool interest distributed; `total_staked` principal never touched |
+| Reward irrelevant to storage cost | `reward_per_byte` floats with supply — market equilibrium |
+
+### Example — $10,000 stable monthly pool, 5% rate, 20% cap
+
+Pool has $200,000 total staked. Monthly budget = $10,000.
+
+| User | Active bytes | Share | Raw reward | After cap |
+|------|-------------|-------|-----------|-----------|
+| alice | 500 GB | 50% | $5,000 | $2,000 ← capped at 20% |
+| bob | 300 GB | 30% | $3,000 | $3,000 |
+| carol | 200 GB | 20% | $2,000 | $2,000 |
+
+Alice's excess ($3,000) stays in pool, accrues to next month.
+
+### Minimum hold period
+
+A new item contributes to `active_bytes` only after `min_hold_blocks` have elapsed
+since registration. The `verification_status` starts as `Pending`, transitions to
+`Active` on the first `verify_holding` call after the minimum period.
+
+This closes the dump-and-drain attack: upload massive data → claim reward → delete.
+With a 30-day minimum hold, data must be verifiably stored for a full month before
+it contributes to the reward calculation.
 
 ---
 
@@ -522,6 +675,12 @@ pub fn verify_holding(
     #[account(mut, pda = [literal("pres"), account("preserver"), arg("ia_id")])]
     record: AccountWithMetadata,
 
+    #[account(mut, pda = [literal("stats"), account("preserver")])]
+    stats: AccountWithMetadata,
+
+    #[account(mut, pda = [literal("pool")])]
+    pool: AccountWithMetadata,
+
     // signer: the preserver (self-verification) or any peer (community verification)
     #[account(signer)]
     verifier: AccountWithMetadata,
@@ -529,9 +688,23 @@ pub fn verify_holding(
     ia_id:        String,
     block_number: u64,   // submitted by Keeper client
 ) -> SpelResult {
-    // update record.last_verified_block = block_number
-    // if gap since last verification > DELINQUENCY_THRESHOLD → record.verification_status = Delinquent
-    // else → record.verification_status = Active
+    // prev_status = record.verification_status
+    // record.last_verified_block = block_number
+    //
+    // new_status:
+    //   if gap > DELINQUENCY_THRESHOLD → Delinquent
+    //   else if block_number - item.block < pool.min_hold_blocks → Pending  // new — under minimum hold
+    //   else → Active
+    //
+    // if prev_status != Active AND new_status == Active:
+    //   stats.active_bytes          += record.total_bytes
+    //   pool.total_active_bytes     += record.total_bytes
+    //
+    // if prev_status == Active AND new_status != Active:
+    //   stats.active_bytes          -= record.total_bytes
+    //   pool.total_active_bytes     -= record.total_bytes
+    //
+    // record.verification_status = new_status
 }
 ```
 
@@ -541,7 +714,10 @@ Add to `PreservationRecord`:
 pub last_verified_block: u64,
 pub verification_status: VerificationStatus,
 
-pub enum VerificationStatus { Active, Delinquent }
+pub enum VerificationStatus { Pending, Active, Delinquent }
+// Pending: item registered but min_hold_blocks not yet elapsed — no reward contribution
+// Active:  holding confirmed within DELINQUENCY_THRESHOLD — contributes to active_bytes
+// Delinquent: gap exceeded — removed from active_bytes until re-verified
 ```
 
 ### Self-verification (Keeper, runs on a timer)
@@ -704,9 +880,11 @@ download → Stash → get collection CID
          ↓
     keeper_protocol::register_preservation(...)   (new)
          ↓
-    keeper_score updated on-chain (soulbound)
+    keeper_score updated on-chain (soulbound, leaderboard)
          ↓
-    monthly: keeper_protocol::claim_monthly_reward(month) → $KEEP minted
+    every 7 days: verify_holding() → active_bytes maintained
+         ↓
+    monthly: claim_monthly_reward(month) → stable transferred from pool
 ```
 
 The generated FFI client from `spel-client-gen --target logos-module` provides typed
@@ -720,8 +898,10 @@ C++ bindings for all instructions directly from the IDL — no hand-written IPC 
 |------|--------------|
 | First-inscriber atomicity | Handler checks `first_preserver == AccountId::default()` on `#[account(mut)]` item — first writer wins by blockchain ordering |
 | On-chain CID record | `ItemRecord` account — queryable by anyone, independent of Beacon |
-| Per-user stats + soulbound score | `UserStats` PDA — `keeper_score` incremented on each registration, never transfers |
-| Monthly economic reward | `claim_monthly_reward` mints transferable `$KEEP` proportional to score share |
+| Per-user stats + soulbound score | `UserStats` PDA — `keeper_score` (leaderboard) and `active_bytes` (reward share) |
+| Stable staking + pool | `stake_to_join` deposits stable; `RewardPool` tracks total_staked + total_active_bytes |
+| Monthly stable reward | `claim_monthly_reward` transfers stable pro-rata by active_bytes; hard cap per user |
+| Exit | `withdraw_stake` returns stable after lock period; keeper_score stays on-chain |
 | Suspicion detection | Logic inside `register_preservation` — pure zkVM arithmetic |
 | Community voting | `vote_on_dispute` weighted by `first_preserved_count` |
 | Cross-program composition | `ctx.caller_program_id` — other programs can verify holdings |
@@ -856,9 +1036,11 @@ resolution. No slash instruction or escrow mechanism was defined, and SPEL has n
 native stake/escrow primitive.
 
 **Resolution applied:** dispute resolution is social signal only for v1. Slashing
-deferred to v2: requires a `stake` escrow PDA (locking `$KEEP` at registration time)
-and a `resolve_dispute` instruction to redistribute the loser's staked `$KEEP` to the
-winner. Soulbound `keeper_score` is never slashed — only the transferable `$KEEP` stake.
+deferred to v2: `UserStake.amount` (the stable deposit) is the natural escrow — a
+`resolve_dispute` instruction could redistribute a portion of the loser's stable stake
+to the winner. `keeper_score` is never slashed — only the economic stable deposit is at
+risk. This requires adding a `dispute_stake` field to `UserStake` and a `resolve_dispute`
+instruction.
 
 ---
 
