@@ -22,26 +22,26 @@ bool KeeperHttpBridge::listen(quint16 port)
     server_.route("/preserve", M::Post, [this](const QHttpServerRequest& req) {
         return handlePreserve(req);
     });
-    server_.route("/preserve", M::Options, [](const QHttpServerRequest&) {
-        return corsPreflight();
+    server_.route("/preserve", M::Options, [](const QHttpServerRequest& req) {
+        return corsPreflight(req);
     });
 
     // GET /queue — return current queue state
-    server_.route("/queue", M::Get, [this](const QHttpServerRequest&) {
-        return handleQueue();
+    server_.route("/queue", M::Get, [this](const QHttpServerRequest& req) {
+        return handleQueue(req);
     });
-    server_.route("/queue", M::Options, [](const QHttpServerRequest&) {
-        return corsPreflight();
+    server_.route("/queue", M::Options, [](const QHttpServerRequest& req) {
+        return corsPreflight(req);
     });
 
     // GET /status/<identifier> — item status (queue + log)
     server_.route("/status/<arg>", M::Get,
-        [this](const QString& id, const QHttpServerRequest&) {
-            return handleStatus(id);
+        [this](const QString& id, const QHttpServerRequest& req) {
+            return handleStatus(id, req);
         });
     server_.route("/status/<arg>", M::Options,
-        [](const QString&, const QHttpServerRequest&) {
-            return corsPreflight();
+        [](const QString&, const QHttpServerRequest& req) {
+            return corsPreflight(req);
         });
 
     auto* tcp = new QTcpServer(this);
@@ -70,21 +70,26 @@ QHttpServerResponse KeeperHttpBridge::handlePreserve(const QHttpServerRequest& r
                        QHttpServerResponse::StatusCode::Unauthorized);
     }
 
+    const QString origin = req.value("Origin");
     QString result = plugin_->preserveItem(body.value("url").toString());
     auto resp = jsonOk(result.toUtf8());
-    addCors(resp);
+    addCors(resp, origin);
     return resp;
 }
 
-QHttpServerResponse KeeperHttpBridge::handleQueue()
+QHttpServerResponse KeeperHttpBridge::handleQueue(const QHttpServerRequest& req)
 {
+    const QString origin = req.value("Origin");
     auto resp = jsonOk(plugin_->getQueue().toUtf8());
-    addCors(resp);
+    addCors(resp, origin);
     return resp;
 }
 
-QHttpServerResponse KeeperHttpBridge::handleStatus(const QString& identifier)
+QHttpServerResponse KeeperHttpBridge::handleStatus(const QString& identifier,
+                                                    const QHttpServerRequest& req)
 {
+    const QString origin = req.value("Origin");
+
     // 1. Search the live queue
     QJsonArray queue = QJsonDocument::fromJson(plugin_->getQueue().toUtf8()).array();
     for (const auto& v : queue) {
@@ -94,7 +99,7 @@ QHttpServerResponse KeeperHttpBridge::handleStatus(const QString& identifier)
             out["status"] = item.value("status");
             out["cid"]    = item.value("collectionCid");
             auto resp = jsonOk(QJsonDocument(out).toJson(QJsonDocument::Compact));
-            addCors(resp);
+            addCors(resp, origin);
             return resp;
         }
     }
@@ -108,7 +113,7 @@ QHttpServerResponse KeeperHttpBridge::handleStatus(const QString& identifier)
             out["status"] = QStringLiteral("done");
             out["cid"]    = item.value("collectionCid");
             auto resp = jsonOk(QJsonDocument(out).toJson(QJsonDocument::Compact));
-            addCors(resp);
+            addCors(resp, origin);
             return resp;
         }
     }
@@ -129,23 +134,29 @@ QHttpServerResponse KeeperHttpBridge::jsonOk(const QByteArray& body)
 QHttpServerResponse KeeperHttpBridge::jsonErr(const QByteArray& body,
                                                QHttpServerResponse::StatusCode code)
 {
-    auto resp = QHttpServerResponse("application/json", body, code);
-    addCors(resp);
-    return resp;
+    return QHttpServerResponse("application/json", body, code);
 }
 
-QHttpServerResponse KeeperHttpBridge::corsPreflight()
+QHttpServerResponse KeeperHttpBridge::corsPreflight(const QHttpServerRequest& req)
 {
+    const QString origin = req.value("Origin");
     QHttpServerResponse resp("text/plain", QByteArray{},
                              QHttpServerResponse::StatusCode::NoContent);
-    addCors(resp);
+    addCors(resp, origin);
     return resp;
 }
 
-void KeeperHttpBridge::addCors(QHttpServerResponse& resp)
+bool KeeperHttpBridge::isTrustedOrigin(const QString& origin)
 {
+    return origin.startsWith("chrome-extension://")
+        || origin.startsWith("moz-extension://");
+}
+
+void KeeperHttpBridge::addCors(QHttpServerResponse& resp, const QString& origin)
+{
+    if (!isTrustedOrigin(origin)) return;
     QHttpHeaders hdrs = resp.headers();
-    hdrs.append("Access-Control-Allow-Origin",  "*");
+    hdrs.append("Access-Control-Allow-Origin",  origin.toUtf8());
     hdrs.append("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     hdrs.append("Access-Control-Allow-Headers", "Content-Type");
     resp.setHeaders(hdrs);

@@ -292,23 +292,6 @@ pub fn vote_on_dispute(
 
 ---
 
-### `verify_preservation`
-
-Read-only. Anyone can call this to check a CID claim independently.
-
-```rust
-#[instruction]
-pub fn verify_preservation(
-    #[account(pda = [literal("item"), arg("ia_id")])]
-    item: AccountWithMetadata,
-    ia_id: String,
-) -> SpelResult
-```
-
-Returns the full `ItemRecord` — canonical CID, hashes, preserver, block, status.
-
----
-
 ### `transfer`
 
 Move tokens between users.
@@ -408,6 +391,22 @@ for (const auto& c : cidBytes) merkleInput.append(c);
 QByteArray fileMerkleRoot = QCryptographicHash::hash(merkleInput, QCryptographicHash::Sha256);
 ```
 
+### Reading item state (account inspection)
+
+LEZ instructions are state-transition functions — they cannot return query results.
+To read an `ItemRecord`, inspect the account directly:
+
+```
+# CLI
+spel inspect <item-pda> --type ItemRecord
+
+# Generated FFI client (from spel-client-gen --target logos-module)
+keeper_protocol_fetch_item_record(ia_id, callback)
+```
+
+This replaces a `verify_preservation` instruction — submitting a no-op transaction
+to read state is unnecessary and wasteful.
+
 ### Content integrity check (anyone can run)
 
 ```
@@ -449,24 +448,32 @@ DHT. Any peer can discover what a node holds without asking it directly.
 
 ### `verify_holding` instruction (LEZ)
 
+Any node can submit this — both self-verification and community verification use the
+same instruction. The `preserver` account identifies whose `PreservationRecord` to
+update; the `verifier` is whoever signs the transaction (may or may not be the preserver).
+
 ```rust
 #[instruction]
 pub fn verify_holding(
     #[account(mut, pda = [literal("item"), arg("ia_id")])]
     item: AccountWithMetadata,
 
-    #[account(signer)]
+    // the node whose holding is being verified — not required to be the signer
     preserver: AccountWithMetadata,
 
     #[account(mut, pda = [literal("pres"), account("preserver"), arg("ia_id")])]
     record: AccountWithMetadata,
 
+    // signer: the preserver (self-verification) or any peer (community verification)
+    #[account(signer)]
+    verifier: AccountWithMetadata,
+
     ia_id:        String,
     block_number: u64,   // submitted by Keeper client
 ) -> SpelResult {
-    // preserver signs this tx — proof their node responded to exists() check
     // update record.last_verified_block = block_number
-    // if gap since last verification > DELINQUENCY_THRESHOLD → status = Delinquent
+    // if gap since last verification > DELINQUENCY_THRESHOLD → record.verification_status = Delinquent
+    // else → record.verification_status = Active
 }
 ```
 
@@ -507,15 +514,17 @@ void KeeperPlugin::runVerificationCycle() {
 ### Community verification (any peer)
 
 Any Keeper node can verify another node's holdings by attempting a network retrieval
-and submitting the result on-chain:
+and submitting the same `verify_holding` instruction (verifier ≠ preserver):
 
 ```cpp
-// Verifier: tries to fetch CID from the network (not local)
+// Verifier: tries to fetch the target preserver's CID from the network
 m_storage->downloadChunksAsync(collectionCid, /*local=*/false, chunkSize,
-    [this, ia_id](LogosResult r) {
+    [this, ia_id, targetPreserverId](LogosResult r) {
         if (r.success)
-            submitConfirmReachableTx(ia_id);  // → confirm_reachable on LEZ
-        // If fails → can submit a challenge_holding tx
+            // Any peer can submit verify_holding on behalf of the preserver
+            submitVerifyHoldingTx(ia_id, targetPreserverId);
+        // If fetch fails → simply do not submit; absence of verification
+        // accumulates toward the delinquency threshold naturally
     });
 ```
 
@@ -539,14 +548,15 @@ m_storage->manifestsAsync([this](LogosResult r) {
 
 | Event | Action |
 |-------|--------|
-| Registration | `last_verified_block` set to registration block |
+| Registration | `record.last_verified_block` set to `block_number` |
 | Every 7 days | Keeper calls `exists()`, submits `verify_holding` tx if true |
-| Gap > 30 days | LEZ marks `PreservationRecord.verification_status = Delinquent` |
-| Delinquent | Rewards suspended; confirmed count frozen |
-| Re-verified | Status restored to `Active`; rewards resume |
+| Gap > 30 days | `record.verification_status = Delinquent` for **this item only** |
+| Delinquent | Confirmation bonuses suspended for this item; other items unaffected |
+| Re-verified | Status restored to `Active`; bonuses resume for this item |
 
-The 30-day window tolerates node restarts and short network disruptions without
-immediately penalising the preserver.
+Delinquency is per `PreservationRecord` — one item going delinquent does not affect
+the user's `UserStats` for other items or their ability to register new ones.
+The 30-day window tolerates node restarts and short network disruptions.
 
 ---
 
@@ -560,7 +570,7 @@ Not all hash divergences are equal:
 |------------|-------------|----------|--------|
 | Same metadata + merkle, different CID | Different IPFS chunking | Low | Log only, 10% reward |
 | Same metadata, different merkle | Different files uploaded, or file modified | Medium | 0 reward, Suspicious |
-| Different metadata hash | IA metadata changed, or tampering | High | 0 reward, dispute auto-opened |
+| Different metadata hash | IA metadata changed, or tampering | High | 0 reward, item Suspicious — caller must call `open_dispute` |
 
 ### Auto-flagging logic in `register_preservation`
 
@@ -716,50 +726,45 @@ Auto-flagging is purely a status field on `ItemRecord`.
 
 ### GAP 4 — `verify_preservation` instruction is redundant
 
-**Severity: Medium**
+**Severity: Medium — Status: Resolved**
 
-The instruction is described as "read-only" and "returns the full `ItemRecord`". But
+The instruction was described as "read-only" and "returns the full `ItemRecord`". But
 LEZ instructions are state-transition functions — they must return post-states, not
 query results. A no-op instruction that returns identical pre-states is valid but
 pointless: you cannot read the return value from a submitted transaction.
 
-The correct way to read account state is `spel inspect <item-pda> --type ItemRecord`
-directly against the node, or via the generated FFI client's fetch functions
-(`spel-client-gen` generates `{module}_fetch_{account_type}()` C FFI helpers for this).
-
-**Resolution:** drop `verify_preservation` as an instruction. Document account
-inspection via `spel inspect` and the generated FFI fetch functions instead.
+**Resolution applied:** `verify_preservation` removed from the instruction set.
+Account inspection documented in the Content Verification section:
+`spel inspect <item-pda> --type ItemRecord` (CLI) or
+`keeper_protocol_fetch_item_record()` (generated FFI client).
 
 ---
 
 ### GAP 5 — `confirm_reachable` and `challenge_holding` undefined
 
-**Severity: Medium**
+**Severity: Medium — Status: Resolved**
 
-Both are referenced by name in the Storage Holding Verification section
-(`submitConfirmReachableTx`, "can submit a challenge_holding tx") but neither has
-an instruction definition anywhere in the doc.
+Both were referenced by name in the Storage Holding Verification section but had no
+instruction definition.
 
-**Resolution:** either define them fully (parameters, accounts, logic) or remove
-the references and collapse the community verification flow into a note that
-`verify_holding` covers both self- and community-submission (any signer can call it,
-not just the preserver).
+**Resolution applied:** collapsed into `verify_holding`. The instruction now accepts
+any signer (`verifier`) separate from the `preserver` account being verified. Self-
+and community-verification are the same instruction — no separate `confirm_reachable`
+or `challenge_holding` needed. If a community peer's fetch fails they simply do not
+submit; non-submission naturally accumulates toward the delinquency threshold.
 
 ---
 
 ### GAP 6 — Delinquency is per-item, doc implies per-user
 
-**Severity: Medium**
+**Severity: Medium — Status: Resolved**
 
-`verification_status` (`Active`/`Delinquent`) sits on `PreservationRecord`, which is
-one per (preserver, item). The reward table and cadence table say "Rewards suspended"
-and "confirmed count frozen" as if the entire user account is affected. But a user
-with one delinquent item can still earn full rewards registering new items — only that
-specific `PreservationRecord` is delinquent.
+`verification_status` sits on `PreservationRecord` (one per preserver+item), but the
+cadence table said "Rewards suspended; confirmed count frozen" as if the whole account
+is affected.
 
-**Resolution:** clarify in the doc that delinquency is per-item: a delinquent
-`PreservationRecord` stops contributing to `confirmed_count` and earns no future
-confirmation bonuses for that item. `UserStats` totals are not frozen globally.
+**Resolution applied:** cadence table updated — delinquency text now explicitly scoped
+to "this item only". Added note that `UserStats` totals are not frozen globally.
 
 ---
 
