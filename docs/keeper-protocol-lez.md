@@ -47,61 +47,105 @@ At any time (any node — challenge-response audit):
 
 The on-chain `ItemRecord` is the source of truth — not Beacon, not Cord.
 
-> **Instruction scope note:** The flowchart above shows the core use case (10 of 19 v1
+> **Instruction scope note:** The flowchart above shows the core use case (10 of 23 v1
 > instructions). Omitted for brevity: `initialize_program`, `open_dispute`,
 > `vote_on_dispute`, `snapshot_user`, `take_monthly_snapshot`, `withdraw`, `deregister_user`,
-> `deregister_item`, `migrate_score`. See the Instructions section for the complete set.
+> `deregister_item`, `migrate_score`, `create_channel`, `add_channel_entry`,
+> `verify_channel`, `subscribe_channel`. See the Instructions section for the complete set.
 
 ## Channel Subscriptions
 
-Channels are curated feeds of IA collections worth preserving. The Keeper client
-monitors subscribed channels and automatically fills the user's pledged storage
-quota — no manual curation required.
+Channels are curated, on-chain lists of IA collections worth preserving. Every
+`(ia_id, CID)` pair is inscribed directly on-chain as a `ChannelEntry` PDA —
+no off-chain files, no URL dependencies. Channels are as censorship-resistant as
+the preservation records themselves.
 
-### Channel types
+### Account types
 
-| Type | Who curates | Example |
-|------|-------------|---------|
-| **IA priority list** | Internet Archive | Collections most at risk, least replicated |
-| **Community list** | Any publisher (URL feed) | "Great 78 Project", "US Gov Docs", topic lists |
-| **Institutional** | Library / university | Collections an institution specifically endorses |
+**`Channel`** — one per channel. Holds curator identity and verified status.
 
-Channels are **off-chain feeds** (JSON over HTTPS or a content-addressed format).
-What goes on-chain is the normal `PreservationRecord` — the channel is just how the
-client decides *what* to preserve automatically.
+```rust
+#[account_type]
+pub struct Channel {
+    pub channel_id:  String,
+    pub curator:     AccountId,    // who manages this channel
+    pub name:        String,
+    pub description: String,
+    pub verified:    bool,         // set by verify_channel (authority-only)
+    pub entry_count: u64,
+}
+```
+
+**`ChannelEntry`** — one per `(channel_id, ia_id)`. The inscription: curator attests
+this collection at this CID is worth preserving.
+
+```rust
+#[account_type]
+pub struct ChannelEntry {
+    pub channel_id:     String,
+    pub ia_id:          String,
+    pub canonical_cid:  [u8; 32],  // CID curator attests for this collection
+    pub added_at_block: u64,
+}
+```
+
+**`ChannelRegistry`** — singleton enumerating all channels.
+
+```rust
+#[account_type]
+pub struct ChannelRegistry {
+    pub channels: Vec<AccountId>,  // channel PDAs in creation order
+}
+```
+
+**`ChannelSubscription`** — one per `(user, channel_id)`. Records the subscription
+and the user's mode preference.
+
+```rust
+#[account_type]
+pub struct ChannelSubscription {
+    pub user:        AccountId,
+    pub channel_id:  String,
+    pub mode:        SubscriptionMode,  // Auto | Approve
+}
+
+#[account_type]
+pub enum SubscriptionMode { Auto, Approve }
+```
+
+### Instructions
+
+**`create_channel(channel_id, name, description)`** — initialises a `Channel` PDA.
+Anyone can create a channel; `curator = signer`.
+
+**`add_channel_entry(channel_id, ia_id, canonical_cid)`** — curator-signed. Inscribes
+one `(ia_id, CID)` pair on-chain. Increments `channel.entry_count`.
+
+**`verify_channel(channel_id)`** — authority-signed (IA or Logos-designated key).
+Sets `channel.verified = true`. Verified channels surface first in the client UI.
+
+**`subscribe_channel(channel_id, mode)`** — creates a `ChannelSubscription` PDA for
+the calling user. Client reads this PDA to know which channels to monitor.
 
 ### Client behaviour
 
 ```
-settings.storage_quota = 200 GB          // max total storage donated
-settings.channels = [
-  { url: "https://archive.org/keeper/priority.json", mode: "auto" },
-  { url: "https://example.org/my-list.json",         mode: "approve" },
-]
+// User sets storage pledge once:
+settings.storage_quota = 200  // GB
+
+// Client reads ChannelSubscription PDAs for this user,
+// fetches ChannelEntry PDAs for each subscribed channel,
+// queues items ordered by fewest active preservers first,
+// auto-preserves (mode=Auto) or surfaces for approval (mode=Approve)
+// up to storage_quota.
 ```
 
-**`auto` mode** — client fetches channel feed, queues new `(ia_id, CID)` entries,
-downloads and registers them automatically up to `storage_quota`. No user action needed.
+### Pagination
 
-**`approve` mode** — client surfaces new entries for the user to accept or skip before
-downloading. Good for collections where the user wants to review first.
-
-**Quota enforcement** — before queuing a new item the client checks:
-`current_stored_bytes + item.total_bytes <= storage_quota`. If the item would exceed
-the quota it is skipped (or queued for approval so the user can decide to expand quota).
-
-**Priority ordering** — within a channel, items are ordered by preservation urgency
-(fewest active preservers first). Client always fills lowest-coverage collections first.
-
-### On-chain footprint
-
-No new account types needed for v1. Each preserved item produces the standard
-`PreservationRecord` + `ItemRecord` via `register_preservation`, regardless of whether
-it came from a channel or was added manually.
-
-Optional future addition (v2): `ChannelSubscription` PDA per `(user, channel_hash)` —
-allows the leaderboard to show which channels a preserver is serving, and enables
-per-channel preservation statistics on-chain.
+`ChannelEntry` PDAs for a large channel (e.g. IA priority list with thousands of items)
+use the same enumeration pattern as `PreserverRegistry`: the client iterates all
+`chanentry::{channel_id}::{ia_id}` PDAs. Past ~320k entries per channel the same
+pagination concern applies — v2 plan: `ChannelEntryPage` shards.
 
 ---
 
@@ -343,16 +387,15 @@ pub struct SponsorBounty {
 | `bclaim::{user}::{ia_id}::{month}` | `[literal("bclaim"), account("user"), arg("ia_id"), arg("month")]` | (user, item, month) bounty claim |
 | `challenge::{challenger}::{preserver}::{ia_id}` | `[literal("challenge"), account("challenger"), account("preserver"), arg("ia_id")]` | (challenger, preserver, item) |
 | `vote::{voter}::{ia_id}` | `[literal("vote"), account("voter"), arg("ia_id")]` | (voter, item) — M3 dedup guard |
+| `channel::{channel_id}` | `[literal("channel"), arg("channel_id")]` | channel |
+| `chanentry::{channel_id}::{ia_id}` | `[literal("chanentry"), arg("channel_id"), arg("ia_id")]` | (channel, item) inscription |
+| `chansub::{user}::{channel_id}` | `[literal("chansub"), account("user"), arg("channel_id")]` | (user, channel) subscription |
+| `chanreg` | `[literal("chanreg")]` | singleton channel registry |
 | `pool` | `[literal("pool")]` | singleton |
 | `registry` | `[literal("registry")]` | singleton |
 
-> **Upstream dependency — multi-seed PDA:** The `pda = [...]` array syntax and `arg("name")`
-> seed type are documented in `spel-framework/issues/1` as a **proposed feature, not yet
-> implemented**. The macro currently supports only single-seed PDAs: `pda = literal("x")` or
-> `pda = account("name")`. Every keeper PDA that uses multi-part seeds (all except `pool` and
-> `registry`) requires this upstream feature to land before the program can be compiled.
-> Multi-seed derivation will combine seeds via `sha256(s1 || s2 || ... || sN)` into one
-> 32-byte `PdaSeed` — this matches `compute_pda()` in `spel-framework-core/src/pda.rs`.
+> **Multi-seed PDA confirmed working** (vpavlin, 2026-06-01). All `pda = [...]` array syntax
+> in this table is implementable as written. See Upstream Research for details.
 
 ---
 
