@@ -61,10 +61,10 @@ At any time (any node — challenge-response audit):
 
 The on-chain `ItemRecord` is the source of truth — not Beacon, not Cord.
 
-> **Instruction scope note:** The flowchart above shows the core use case (10 of 16 v1
+> **Instruction scope note:** The flowchart above shows the core use case (10 of 18 v1
 > instructions). Omitted for brevity: `initialize_program`, `open_dispute`,
-> `vote_on_dispute`, `deregister_user`, `deregister_item`, `migrate_score`.
-> See the Instructions section for the complete set.
+> `vote_on_dispute`, `take_monthly_snapshot`, `withdraw`, `deregister_user`,
+> `deregister_item`, `migrate_score`. See the Instructions section for the complete set.
 
 ## Dual Token Model
 
@@ -136,6 +136,8 @@ pub struct PreservationRecord {
                                      // forfeited to pool if chronically Delinquent
     pub last_verified_block:  u64,
     pub verification_status:  VerificationStatus,
+    pub open_challenge_count: u32,  // incremented by challenge_holding; decremented by finalize_challenge
+                                    // deregister_item must reject if > 0 (H3 fix)
 }
 
 #[account_type]
@@ -210,6 +212,11 @@ pub struct RewardPool {
     pub challenge_spam_fee:          u128,   // stable challenger must lock (lost if wrong)
     pub delinquency_threshold:       u64,    // blocks since last_verified_block before status → Delinquent
     pub last_month:                  u32,    // last YYYYMM distributed
+    // Snapshot fields — set once per month by take_monthly_snapshot(); used by claim_monthly_reward
+    // to ensure all claimants in the same month share the same budget (M1 fix)
+    pub snapshot_balance:            u128,   // fee_balance captured at snapshot time
+    pub snapshot_total_active_bytes: u128,   // total_active_bytes captured at snapshot time
+    pub snapshot_month:              u32,    // YYYYMM of the active snapshot; 0 = no snapshot yet
 }
 ```
 
@@ -285,6 +292,7 @@ pub struct SponsorBounty {
 | `bounty::{ia_id}` | `[literal("bounty"), arg("ia_id")]` | sponsored item |
 | `bclaim::{user}::{ia_id}::{month}` | `[literal("bclaim"), account("user"), arg("ia_id"), arg("month")]` | (user, item, month) bounty claim |
 | `challenge::{challenger}::{preserver}::{ia_id}` | `[literal("challenge"), account("challenger"), account("preserver"), arg("ia_id")]` | (challenger, preserver, item) |
+| `vote::{voter}::{ia_id}` | `[literal("vote"), account("voter"), arg("ia_id")]` | (voter, item) — M3 dedup guard |
 | `pool` | `[literal("pool")]` | singleton |
 | `registry` | `[literal("registry")]` | singleton |
 
@@ -513,6 +521,10 @@ pub fn vote_on_dispute(
     #[account(mut, pda = [literal("dispute"), arg("ia_id")])]
     dispute: AccountWithMetadata,
 
+    // M3 fix: init prevents the same voter voting twice on the same dispute
+    #[account(init, pda = [literal("vote"), account("voter"), arg("ia_id")])]
+    vote_receipt: AccountWithMetadata,
+
     #[account(signer)]
     voter: AccountWithMetadata,
 
@@ -550,14 +562,17 @@ pub fn claim_monthly_reward(
     month: u32,   // YYYYMM — e.g. 202607
 ) -> SpelResult
 // Logic:
-//   if pool.total_active_bytes == 0 → return Err(NoActiveStorage)
-//   pool_budget     = pool.fee_balance
-//   reward_per_byte = pool_budget / pool.total_active_bytes
+//   // M1 fix: use snapshot values so all claimants in the same month share a fixed budget
+//   if pool.snapshot_month != month → return Err(SnapshotNotTaken)  // must call take_monthly_snapshot first
+//   if pool.snapshot_total_active_bytes == 0 → return Err(NoActiveStorage)
+//   pool_budget     = pool.snapshot_balance
+//   reward_per_byte = pool_budget / pool.snapshot_total_active_bytes
 //   raw_reward      = stats.active_bytes as u128 × reward_per_byte
 //   cap             = pool_budget × pool.max_user_share_bp / 10_000
 //   payout          = min(raw_reward, cap)
 //   transfer payout stable from pool to user
 //   pool.fee_balance                -= payout
+//   pool.snapshot_balance           -= payout   // track remaining snapshot budget
 //   claim.active_bytes_snapshot      = stats.active_bytes
 //   claim.amount                     = payout
 //   claim.claimed                    = true
@@ -607,6 +622,7 @@ pub fn challenge_holding(
 //   challenge.deadline_block    = block_number + pool.challenge_response_window
 //   challenge.resolved          = false
 //   challenge.preserver_cleared = false
+//   record.open_challenge_count += 1    // H3 fix: deregister_item checks > 0
 ```
 
 > **Deployment constraint:** `challenge_spam_fee` must be set so that a winning challenger
@@ -648,6 +664,8 @@ pub fn finalize_challenge(
 // Logic:
 //   if challenge.resolved → return Err(AlreadyResolved)
 //   if block_number < challenge.deadline_block → return Err(DeadlineNotReached)
+//   // H1 fix: verify the payout account matches the recorded challenger
+//   if challenger.account_id != challenge.challenger → return Err(Unauthorized)
 //
 //   if record.last_verified_block > challenge.challenge_block:
 //     // preserver responded after challenge — cleared
@@ -664,6 +682,7 @@ pub fn finalize_challenge(
 //     record.holding_deposit           -= bounty
 //     challenge.preserver_cleared = false
 //
+//   record.open_challenge_count -= 1    // H3 fix: allow deregister_item when all challenges resolved
 //   challenge.resolved = true
 ```
 
@@ -695,6 +714,57 @@ pub fn fund_pool(
 This instruction has no access control — any account can call it. The pool grows,
 `reward_per_byte` rises, and all active preservers benefit automatically from the
 next claim cycle.
+
+---
+
+### `take_monthly_snapshot`
+
+Called once per month before any `claim_monthly_reward` call. Freezes the pool budget
+and total active bytes denominator for that month, so all claimants share a fixed
+distribution regardless of transaction ordering. (M1 fix)
+
+```rust
+#[instruction]
+pub fn take_monthly_snapshot(
+    #[account(mut, pda = [literal("pool")])]
+    pool: AccountWithMetadata,
+
+    #[account(signer)]
+    caller: AccountWithMetadata,    // permissionless — anyone can trigger
+
+    month: u32,   // YYYYMM
+) -> SpelResult
+// Logic:
+//   if pool.snapshot_month == month → return Err(SnapshotAlreadyTaken)
+//   pool.snapshot_balance            = pool.fee_balance
+//   pool.snapshot_total_active_bytes = pool.total_active_bytes
+//   pool.snapshot_month              = month
+```
+
+---
+
+### `withdraw`
+
+Moves stable from `UserStats.claimable_balance` to the user's real wallet.
+This is the single seam for the v1 internal ledger workaround; the only instruction
+that needs `ChainedCall` to an external stable token program. (M4 fix)
+
+```rust
+#[instruction]
+pub fn withdraw(
+    #[account(mut, pda = [literal("stats"), account("user")])]
+    stats: AccountWithMetadata,
+
+    #[account(signer)]
+    user: AccountWithMetadata,
+
+    amount: u128,
+) -> SpelResult
+// Logic:
+//   if stats.claimable_balance < amount → return Err(InsufficientBalance)
+//   transfer amount stable from pool to user  // ChainedCall to stable token program
+//   stats.claimable_balance -= amount
+```
 
 ---
 
@@ -855,14 +925,18 @@ pub fn deregister_item(
     #[account(mut, pda = [literal("pool")])]
     pool: AccountWithMetadata,
 
+    // M5 fix: stats is required to decrement active_bytes
+    #[account(mut, pda = [literal("stats"), account("user")])]
+    stats: AccountWithMetadata,
+
     #[account(signer)]
     user: AccountWithMetadata,
 
     ia_id: String,
 ) -> SpelResult
 // Logic:
-//   if ChallengeRecord exists for (user, ia_id) and !challenge.resolved:
-//     return Err(ChallengePending)        // prevent deposit escape while challenge open
+//   if record.open_challenge_count > 0:
+//     return Err(ChallengePending)        // H3 fix: covers ALL challengers, not just one PDA key
 //   if record.verification_status == Active:
 //     stats.active_bytes          -= record.total_bytes   // *** must decrement or pool total drifts
 //     pool.total_active_bytes     -= record.total_bytes
@@ -913,6 +987,7 @@ pub fn migrate_score(
 //   new_stats.confirmed_count       = old_stats.confirmed_count
 //   new_stats.mismatch_count        = old_stats.mismatch_count
 //   new_stats.active_bytes          = old_stats.active_bytes
+//   old_stats.active_bytes          = 0         // H4 fix: prevent double reward claim
 //   old_stats.keeper_score          = 0         // old identity retired
 //   old_stats.is_deregistered       = true
 //   registry.preservers.push(new_user.account_id)
@@ -1143,9 +1218,12 @@ DHT. Any peer can discover what a node holds without asking it directly.
 
 ### `verify_holding` instruction (LEZ)
 
-Any node can submit this — both self-verification and community verification use the
-same instruction. The `preserver` account identifies whose `PreservationRecord` to
-update; the `verifier` is whoever signs the transaction (may or may not be the preserver).
+> **v1 restriction (H2 fix):** `verify_holding` requires the preserver to be the signer.
+> Permissionless community verification is a v2 feature — it requires runtime-injected block
+> numbers to be safe. An unsigned verifier can submit any `block_number`, enabling a colluder
+> to keep a preserver artificially Active (earning rewards without actually holding).
+> v2 will add a separate `community_verify_holding` instruction once LEZ exposes the runtime
+> block height.
 
 ```rust
 #[instruction]
@@ -1153,7 +1231,8 @@ pub fn verify_holding(
     #[account(mut, pda = [literal("item"), arg("ia_id")])]
     item: AccountWithMetadata,
 
-    // the node whose holding is being verified — not required to be the signer
+    // v1: preserver must be the signer — prevents attacker-supplied block_number manipulation
+    #[account(signer)]
     preserver: AccountWithMetadata,
 
     #[account(mut, pda = [literal("pres"), account("preserver"), arg("ia_id")])]
@@ -1165,12 +1244,8 @@ pub fn verify_holding(
     #[account(mut, pda = [literal("pool")])]
     pool: AccountWithMetadata,
 
-    // signer: the preserver (self-verification) or any peer (community verification)
-    #[account(signer)]
-    verifier: AccountWithMetadata,
-
     ia_id:        String,
-    block_number: u64,   // submitted by Keeper client
+    block_number: u64,   // submitted by Keeper client; trust-based until LEZ exposes runtime block
 ) -> SpelResult {
     // prev_status = record.verification_status
     // record.last_verified_block = block_number
