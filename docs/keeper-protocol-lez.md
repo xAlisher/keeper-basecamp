@@ -1722,6 +1722,113 @@ See Research Footnotes for sources.
 
 ---
 
+## Privacy Analysis
+
+### Exposure map
+
+Every on-chain account in v1 links an `AccountId` to specific collections. This table
+enumerates each exposure and its severity.
+
+| Account / PDA | What is exposed | Severity |
+|---------------|-----------------|----------|
+| `PreservationRecord` | `preserver: AccountId` + `ia_id: String` stored together. PDA seed is `[literal("pres"), account("preserver"), arg("ia_id")]` — derivable by anyone who knows the account and tries ia_ids | **Critical** |
+| `ItemRecord.first_preserver` | First preserver of a collection is permanently on-chain | High |
+| `ChallengeRecord` | Names `challenger`, `preserver`, and `ia_id` in a single public PDA | High |
+| `BountyClaim` PDA seed `bclaim::{user}::{ia_id}::{month}` | Reveals that a specific account claimed a bounty for a specific item | Medium |
+| `vote::{voter}::{ia_id}` | Reveals which collections a voter participated in disputing | Medium |
+| `fund_item_bounty` signer | Sponsor’s AccountId is a transaction signer — publicly links funder to ia_id | Medium |
+| `PreserverRegistry` | Full public enumerable list of all participants | Low (public by design, but enables mapping) |
+
+**Core threat:** an adversary enumerates `PreserverRegistry` to get all `AccountId`s, then
+for any ia_id of interest derives `pda("pres", account_id, ia_id)` and checks if it
+exists on-chain. No secret is needed. Full "who is preserving what" map is reconstructable
+for any collection.
+
+---
+
+### Privacy path
+
+#### Tier 1 — Short-term: commit-reveal for collection identity (v1 compatible)
+
+The highest-impact change with the least structural disruption: store a **commitment**
+in `PreservationRecord` instead of the ia_id plaintext.
+
+```
+collection_commitment: [u8; 32]  = sha256(ia_id || user_nonce)
+```
+
+The preserver generates a random `user_nonce` at registration time and keeps it private.
+The ia_id itself is not stored on-chain. The preserver reveals `(ia_id, nonce)` when
+needed — during a challenge response or reward claim — and the handler verifies the
+preimage matches the stored commitment.
+
+**What this protects:** passive enumeration of "which accounts preserve which collections"
+is broken. An adversary cannot scan `(AccountId × ia_id)` pairs without knowing the nonce.
+
+**What this does not protect:** a challenger who already knows the ia_id (from network
+monitoring of the CID) can still construct a valid challenge.
+
+**Impact on reward accounting:** none. `PreservationRecord.total_bytes` is still stored
+plaintext — the protocol knows how much data a user holds without knowing which collection
+it is.
+
+**Impact on `ItemRecord.first_preserver`:** this field still names the first preserver
+publicly. Options: (a) remove the field and replace the first-inscriber score bonus with
+a block-timestamp bonus that does not name the account, or (b) accept it as a
+permanent public record for the first participant only.
+
+#### Tier 2 — Medium-term: private PDAs for collection records (SPEL supported)
+
+SPEL supports `#[account(init, private_pda, pda = ..., npk = arg("user_npk"))]`. With
+private PDAs, the PDA address is not derivable by third parties even if they know all
+inputs — the NPK (nullifier public key) is user-controlled.
+
+`PreservationRecord`, `BountyClaim`, and `ChallengeRecord` could all become private PDAs.
+The preserver knows their own records; the general public cannot enumerate them.
+
+**Implication for challenges:** the challenger must discover the `(preserver, collection)`
+pair through off-chain network observation (watching CID reachability on Logos Storage),
+not through chain enumeration. This is a better security model — challengers need
+actual evidence, not just the ability to scan the chain.
+
+#### Tier 3 — Long-term: ZK proofs (v2)
+
+Prove "I hold some item in the IA catalogue" without revealing which one. This requires:
+- ZK set-membership proof over IA catalogue identifiers
+- Reward claims against a ZK identity, not a public `AccountId`
+- Challenges proven via storage proof (ties directly into Q5 — Logos Storage team’s
+  native proof API, if it exists)
+
+---
+
+### Opt-in public mode
+
+Not every preserver wants privacy. Institutions — universities, libraries — may want
+their preservation work to be publicly credited. Proposed: `create_user` takes a
+`public_mode: bool` flag. Public-mode accounts behave exactly as v1 (ia_id plaintext,
+listed in `PreserverRegistry`). Private-mode accounts use commit-reveal and are omitted
+from the public registry, but still receive full reward participation.
+
+---
+
+### Fundamental tension
+
+The reward mechanism requires the protocol to know `active_bytes` per account.
+This is unavoidable: proportional rewards require a denominator. What can be hidden
+is **which collections** contribute to that byte count. Commit-reveal achieves this.
+Full anonymity (hiding the existence of a preservation relationship entirely) requires
+private PDAs or ZK proofs.
+
+---
+
+### Open questions for LEZ / storage devs
+
+6. **Private PDA performance** — What is the cost of `private_pda` vs standard PDA
+   for `init` and `mut` operations? If high, commit-reveal is preferable for v1.
+7. **Storage-level proof** — Does Logos Storage expose a reachability or possession
+   proof that does not require naming the preserver? This would enable privacy-preserving
+   challenges in Tier 3.
+
 ## Competitive Positioning
 
 ### Where Keeper shines

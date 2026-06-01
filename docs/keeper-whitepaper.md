@@ -6,7 +6,7 @@
 
 ## TLDR
 
-The Internet Archive is under threat. Centralized archives can be sued, seized, or shut down. Keeper Protocol makes permanent preservation unstoppable by putting it on a blockchain: anyone who downloads and holds an Internet Archive collection earns stable rewards for as long as they keep holding it. The more people preserve, the more resilient the archive becomes. No single entity controls it. No lawsuit can take it down.
+The Internet Archive is under threat. Centralized archives can be sued, seized, or shut down. Keeper Protocol makes permanent preservation unstoppable by putting it on a blockchain: anyone who downloads and holds an Internet Archive collection earns stable rewards for as long as they keep holding it. The more people preserve, the more resilient the archive becomes. No single entity controls it. No single lawsuit can take it all down.
 
 ---
 
@@ -56,7 +56,7 @@ At the end of each month, the protocol distributes rewards from a shared pool to
 
 A preserver's claim to be holding a collection is not taken on faith. Any third party can challenge it: submit an on-chain assertion that a collection's CID is unreachable on the Logos Storage network. The preserver then has a fixed window to prove otherwise. If they can — the challenge fails and the challenger loses their anti-spam fee. If they cannot — the preserver is marked delinquent, removed from the reward pool, and their deposit goes to the challenger as a bounty.
 
-This creates a market for auditing. It pays to catch cheaters. Over time, this economic pressure produces the same effect as a cryptographic proof — not because everyone is watching all the time, but because anyone who tries to collect rewards without actually holding data risks losing more than they gain.
+This creates a market for auditing. It pays to catch cheaters. Over time, this economic pressure makes cheating unprofitable — not because everyone is watching all the time, but because anyone who tries to collect rewards without actually holding data risks losing more than they gain. This is an economic deterrent, not a cryptographic proof; cryptographic verification is a v2 target.
 
 ### A record that cannot be taken from you
 
@@ -68,7 +68,7 @@ Every preservation act is recorded permanently on-chain as `keeper_score` — a 
 
 Decentralized storage protocols have existed for years. Filecoin, Arweave, Storj — all functional, all growing. None of them are focused on cultural preservation. They are storage markets or investment vehicles. Keeper is neither.
 
-**The reward is stable.** Protocols that pay preservers in their own token create a feedback loop: when token price drops, preservers leave; when preservers leave, service degrades; when service degrades, the token drops further. Keeper pays in stable currency — the same money preservers paid in. This is redistribution of fees, not speculation. A library or university can calculate their expected return with the same certainty as a utility bill.
+**The reward is stable.** Protocols that pay preservers in their own token create a feedback loop: when token price drops, preservers leave; when preservers leave, service degrades; when service degrades, the token drops further. Keeper pays preservers in stable — the registration fees they paid in cycle back as monthly rewards. No speculative token. A library or university can calculate their expected return with the same certainty as a utility bill.
 
 **The mission is specific.** Keeper is not a general-purpose storage market. Every collection in the system is an Internet Archive collection with a stable identifier, verified metadata, and a content hash. This specificity is a feature: preservers know exactly what they are preserving, sponsors know exactly what they are funding, and auditors know exactly what to check.
 
@@ -84,7 +84,7 @@ The Logos network is building infrastructure for communities that need to exist 
 
 A movement that cannot preserve its own history is fragile. A civilization whose records exist only on centralized servers is one court order away from losing its past. Keeper Protocol is one piece of the answer: an economic system that makes it profitable to hold the archive, making the archive itself harder to destroy with every node that joins.
 
-The Internet Archive's motto is *universal access to all knowledge*. Keeper Protocol's contribution is to make that access structurally permanent — not dependent on any single organization's survival, but distributed across thousands of independent nodes, each earning for the work they do.
+The Internet Archive's motto is *universal access to all knowledge*. Keeper Protocol's contribution is to make that access structurally more resilient — not dependent on any single organization's survival, but distributed across thousands of independent nodes, each earning for the work they do.
 
 ---
 
