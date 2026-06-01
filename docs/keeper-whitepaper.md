@@ -16,7 +16,7 @@ In 2023, major record labels filed a $621 million lawsuit against the Internet A
 
 The Logos network stood with the Internet Archive:
 
-> "While centralised projects like the Internet Archive remain vulnerable to external forces seeking to destroy or manipulate them, Logos is building Codex as an open-source data storage protocol to allow any individual or community to durably preserve and decentralise the cultural artefacts that define their legacy." ¹
+> "While centralised projects like the Internet Archive remain vulnerable to external forces seeking to destroy or manipulate them, Logos is building [Logos Storage] as an open-source data storage protocol to allow any individual or community to durably preserve and decentralise the cultural artefacts that define their legacy." ¹
 
 The lawsuit settled. But the vulnerability it exposed remains. A single institution, no matter how mission-driven, is a single point of failure. Courts, governments, and copyright holders can threaten one organization. They cannot threaten ten thousand independent nodes holding copies of the same files.
 
@@ -32,7 +32,7 @@ Logos was founded on the principle that sovereignty over information must be bui
 
 > "Logos wholeheartedly supports the Internet Archive and similar efforts to prevent the eradication and distortion of our collective memory." ¹
 
-The Logos tech stack — Waku for messaging, Codex for storage, Nomos for consensus — exists precisely because censorship-resistant infrastructure cannot be built on top of systems that can be censored. Keeper Protocol is the economic layer that makes decentralized preservation self-sustaining rather than dependent on donations and goodwill.
+The Logos tech stack — Logos Messaging, Logos Storage, Logos Blockchain — exists precisely because censorship-resistant infrastructure cannot be built on top of systems that can be censored. Keeper Protocol is the economic layer that makes decentralized preservation self-sustaining rather than dependent on donations and goodwill.
 
 ---
 
