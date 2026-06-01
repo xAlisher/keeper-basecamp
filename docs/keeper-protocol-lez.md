@@ -1604,10 +1604,87 @@ Findings from reading `logos-co/spel` v0.4.0 source at `~/basecamp/refs/spel`.
 | **Private PDAs** | Supported via `#[account(init, private_pda, pda = ..., npk = arg("user_npk"))]`. Not used in keeper v1 but available. |
 | **`ProgramContext`** | `ctx: ProgramContext` provides `self_program_id` and `caller_program_id`. Never part of instruction ABI or IDL. Useful for `#[account(owner = self_program_id)]` constraints. |
 
-### Upstream blockers for keeper v1
+### Upstream blockers and workarounds
 
-1. **Multi-seed PDA** (`spel-framework/issues/1`) — all PDAs except `pool` and `registry` depend on this. Must land before any keeper instruction can be compiled. Worth filing a comment on the issue to signal demand.
-2. **ChainedCall stable transfer** — need LEZ dev to confirm the stable token program ID and `ChainedCall` format before `register_preservation`, `claim_monthly_reward`, and others can be implemented.
+#### Blocker 1 — Multi-seed PDA (`spel-framework/issues/1`)
+
+All PDAs except `pool` and `registry` require multi-seed or `arg()` seed syntax not yet in the macro.
+
+**Workaround A — Manual PDA verification in handler body**
+
+Remove `pda = ...` from `#[account]`. Declare the account as plain `#[account(init)]` or
+`#[account(mut)]`, then verify the address inside the handler using the already-implemented
+`compute_pda_multi()`:
+
+```rust
+use spel_framework_core::pda::{compute_pda_multi, seed_from_str};
+
+#[instruction]
+pub fn register_preservation(
+    #[account(init)]          // ← no pda= constraint; verified manually below
+    pres: AccountWithMetadata,
+    preserver: AccountWithMetadata,
+    ia_id: String,
+    ...
+) -> SpelResult {
+    let expected = compute_pda_multi(
+        &ctx.self_program_id,
+        &[&seed_from_str("pres"), &preserver.id().to_seed(), &ia_id.to_seed()],
+    );
+    if pres.id() != expected {
+        return Err(SpelError::PdaMismatch { account_name: "pres".into(),
+            expected: format!("{:?}", expected), actual: format!("{:?}", pres.id()) });
+    }
+    // ... rest of handler
+}
+```
+
+`compute_pda_multi()` and the `sha256(s1 || s2 || ... || sN)` hash scheme are already in
+`spel-framework-core/src/pda.rs`. The macro is the only missing piece. On-chain safety
+is identical to the constrained form — the IDL just won't encode seed metadata, so the
+generated C++ client must compute addresses itself using the same scheme.
+
+**Workaround B — Single-account seed (for `stats` only)**
+
+`stats::{user}` can use `pda = account("user")` (single AccountId seed — works today).
+No literal prefix needed; the program ID already namespaces it. No collision risk because
+`stats` is the only single-account PDA in keeper.
+
+#### Blocker 2 — ChainedCall stable transfer
+
+The `ChainedCall` struct comes from `nssa_core::program` which is not in the local refs.
+Its call format is unknown until LEZ devs document the stable token program.
+
+**Workaround — Internal ledger model**
+
+Track all stable balances as `u128` fields in keeper-owned accounts. "Transfer" becomes
+a pure account data mutation — no cross-program call needed:
+
+```rust
+// Instead of: transfer(pool, user_wallet, amount)
+pool.fee_balance           -= amount;
+user_stats.claimable_balance += amount;
+
+// User calls withdraw(amount) to move from claimable_balance to their real wallet.
+// withdraw() is the only instruction that needs ChainedCall — isolated to one place.
+```
+
+`withdraw` is the single seam between the internal ledger and the external token world.
+When `ChainedCall` format is confirmed, only `withdraw` changes — all other instruction
+logic is unaffected.
+
+### Build phases
+
+| Phase | Instructions | Blocker workaround |
+|-------|--------------|--------------------|
+| **1 — Singletons** | `initialize_program`, `create_user`, `fund_pool` | `pool`/`registry` use single-literal seeds (work today); `stats` uses single-account seed (Workaround B) |
+| **2 — Core flow** | `register_preservation`, `verify_holding`, `claim_monthly_reward`, `deregister_item`, `deregister_user` | Manual PDA verification (Workaround A) + internal ledger (Workaround 2) |
+| **3 — Audit + bounty** | `challenge_holding`, `finalize_challenge`, `create_item_bounty`, `fund_item_bounty`, `claim_item_bounty` | Manual PDA verification (Workaround A) + internal ledger |
+| **4 — Governance** | `open_dispute`, `vote_on_dispute`, `migrate_score` | Manual PDA verification (Workaround A) |
+| **Upgrade A** | Replace manual PDA checks with `pda = [...]` macro constraints | When `spel-framework/issues/1` lands |
+| **Upgrade B** | Replace `withdraw` internal ledger with `ChainedCall` to real stable token | When LEZ stable token API is confirmed |
+
+Phase 1 can start immediately with no upstream dependencies.
 
 ---
 
