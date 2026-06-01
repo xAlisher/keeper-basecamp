@@ -35,6 +35,12 @@ End of each month:
       → stable transferred from RewardPool to user
       → RewardClaim PDA created (claimed = true for this month)
       → RewardPool.fee_balance reduced by total distributed
+
+At any time (institutions / foundation):
+  → keeper_protocol::fund_pool(amount)
+      → caller transfers `amount` stable directly to RewardPool.fee_balance
+      → no keeper_score, no registration — purely a pool top-up
+      → open to anyone: Logos Foundation, Internet Archive, donors, grants
 ```
 
 The on-chain `ItemRecord` is the source of truth — not Beacon, not Cord.
@@ -44,7 +50,7 @@ The on-chain `ItemRecord` is the source of truth — not Beacon, not Cord.
 | Layer | Token | Nature | Source | Use |
 |-------|-------|--------|--------|-----|
 | **Reputation** | `keeper_score` | Soulbound, non-transferable | Earned by preserving items | Leaderboard, dispute voting weight, determines monthly reward **share** |
-| **Economic** | Stable (configurable at deploy) | Transferable, real value | User deposits to join | Funds the reward pool; paid out monthly in the same stable |
+| **Economic** | Stable (configurable at deploy) | Transferable, real value | Registration fees + institutional grants | Funds the reward pool; paid out monthly in the same stable |
 
 **`keeper_score` is not a financial asset.** It has no price, no market, no transfer. It is a permanent on-chain record of preservation work — like a credit score. It cannot be bought.
 
@@ -389,6 +395,35 @@ and increase next month's budget. The pool never distributes more than its curre
 
 ---
 
+### `fund_pool`
+
+Open institutional entry point. Any party — Logos Foundation, Internet Archive, grant
+programs, or individual donors — can top up the reward pool directly without joining as
+a preserver. The caller receives no `keeper_score` and no `PreservationRecord`; this is
+a pure economic contribution.
+
+```rust
+#[instruction]
+pub fn fund_pool(
+    #[account(mut, pda = [literal("pool")])]
+    pool: AccountWithMetadata,
+
+    #[account(signer)]
+    funder: AccountWithMetadata,
+
+    amount: u128,   // stable to transfer into pool.fee_balance
+) -> SpelResult
+// Logic:
+//   transfer amount stable from funder to pool
+//   pool.fee_balance += amount
+```
+
+This instruction has no access control — any account can call it. The pool grows,
+`reward_per_byte` rises, and all active preservers benefit automatically from the
+next claim cycle.
+
+---
+
 ## Keeper Score Formula
 
 `keeper_score` is the soulbound leaderboard metric. It accumulates with every preservation,
@@ -447,9 +482,12 @@ user_payout     = min(raw_reward, pool_budget × max_user_share_bp / 10_000)
 data doubles, reward per byte halves. If few people preserve, rate rises — incentivising
 others to fill the gap. The pool self-balances.
 
-**Pool sustainability:** funded entirely by registration fees — every `register_preservation`
-call transfers `registration_fee` stable to the pool. More preservation activity = larger
-pool. A foundation can also top up `fee_balance` directly to bootstrap early rewards.
+**Pool sustainability:** two inflow sources:
+- **Registration fees** — every `register_preservation` call transfers `registration_fee`
+  stable to the pool. More preservation activity = larger pool.
+- **Institutional grants** — `fund_pool` accepts any stable transfer from any party.
+  Logos Foundation, Internet Archive, or grant programs can top up the pool directly
+  at any time. No membership required — just a signed transaction.
 
 ### Balancing properties
 
@@ -828,6 +866,7 @@ C++ bindings for all instructions directly from the IDL — no hand-written IPC 
 | On-chain CID record | `ItemRecord` account — queryable by anyone, independent of Beacon |
 | Per-user stats + soulbound score | `UserStats` PDA — `keeper_score` (leaderboard) and `active_bytes` (reward share) |
 | Fee-funded reward pool | `register_preservation` charges `registration_fee` stable per call → `RewardPool.fee_balance` |
+| Institutional pool funding | `fund_pool` — permissionless top-up; open to Logos Foundation, Internet Archive, grants, donors |
 | Monthly stable reward | `claim_monthly_reward` transfers stable pro-rata by active_bytes; hard cap per user |
 | Suspicion detection | Logic inside `register_preservation` — pure zkVM arithmetic |
 | Community voting | `vote_on_dispute` weighted by `first_preserved_count` |
