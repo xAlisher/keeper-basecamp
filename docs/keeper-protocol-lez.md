@@ -462,7 +462,7 @@ pub fn register_preservation(
     merkle_root:    [u8; 32],
     file_count:     u32,
     total_bytes:    u64,
-    block_number:   u64,        // submitted by Keeper client; trust-based until LEZ exposes it natively
+    block_number:   u64,        // trust-based v1; replaced by ClockContext.block_id when spel#226 lands
 ) -> SpelResult
 ```
 
@@ -631,10 +631,12 @@ pub fn challenge_holding(
     pool: AccountWithMetadata,
 
     ia_id:        String,
-    block_number: u64,
+    block_number: u64,   // trust-based v1; replaced by ClockContext.block_id when spel#226 lands
 ) -> SpelResult
 // Logic:
 //   transfer pool.challenge_spam_fee stable from challenger to pool (anti-spam; lost if challenger is wrong)
+//   // spel#226 upgrade: if block_number - cooldown[challenger][preserver].last_block < pool.challenge_cooldown_blocks
+//   //   → return Err(ChallengeCooldown)  // rate limit across all items for this pair
 //   challenge.ia_id             = ia_id
 //   challenge.preserver         = preserver.account_id
 //   challenge.challenger        = challenger.account_id
@@ -649,6 +651,11 @@ pub fn challenge_holding(
 > is net-positive: `challenge_spam_fee ≤ holding_deposit_amount × challenge_bounty_bp / 10_000`.
 > If the spam fee exceeds the expected bounty, honest challengers lose money even on a win —
 > destroying the audit incentive. `initialize_program` should enforce this invariant.
+>
+> **Rate limiting (when `spel#226` lands):** add `challenge_cooldown_blocks: u64` to `RewardPool`
+> config and a `cooldown::{challenger}::{preserver}` PDA tracking the last challenge block per pair.
+> This caps challenge rate per `(challenger, preserver)` pair independent of the spam fee —
+> making sustained spam arithmetically impossible regardless of attacker budget.
 
 ---
 
@@ -679,7 +686,7 @@ pub fn finalize_challenge(
 
     preserver:    AccountWithMetadata,
     ia_id:        String,
-    block_number: u64,
+    block_number: u64,   // trust-based v1; replaced by ClockContext.block_id when spel#226 lands
 ) -> SpelResult
 // Logic:
 //   if challenge.resolved → return Err(AlreadyResolved)
@@ -782,7 +789,7 @@ pub fn take_monthly_snapshot(
     #[account(signer)]
     caller: AccountWithMetadata,    // permissionless — anyone can trigger
 
-    month: u32,   // YYYYMM
+    month: u32,   // YYYYMM; when spel#226 lands: derive from ClockContext.timestamp, remove this arg
 ) -> SpelResult
 // Logic:
 //   if month <= pool.last_month → return Err(InvalidMonth)  // Finding 13: prevent re-snapshot of past month
@@ -1281,8 +1288,9 @@ DHT. Any peer can discover what a node holds without asking it directly.
 > Permissionless community verification is a v2 feature — it requires runtime-injected block
 > numbers to be safe. An unsigned verifier can submit any `block_number`, enabling a colluder
 > to keep a preserver artificially Active (earning rewards without actually holding).
-> v2 will add a separate `community_verify_holding` instruction once LEZ exposes the runtime
-> block height.
+> v2 will add a separate `community_verify_holding` instruction once `logos-co/spel#226`
+> (`ClockContext`) lands — the trust-based `block_number: u64` parameter is then replaced
+> by the runtime-injected `ClockContext.block_id`.
 
 ```rust
 #[instruction]
@@ -1304,7 +1312,7 @@ pub fn verify_holding(
     pool: AccountWithMetadata,
 
     ia_id:        String,
-    block_number: u64,   // submitted by Keeper client; trust-based until LEZ exposes runtime block
+    block_number: u64,   // trust-based v1; replaced by ClockContext.block_id when spel#226 lands
 ) -> SpelResult {
     // prev_status = record.verification_status
     // record.last_verified_block = block_number
@@ -1699,7 +1707,7 @@ wins by blockchain ordering."
 | Proof node is *continuously* holding | Preserver can unpin and re-pin just before the deadline — `challenge_holding` creates economic pressure against this |
 | Proof files are authentic IA content | Trust IA's sha1/md5 in metadata; `metadata_hash` anchors the claim at time of preservation |
 | Sybil resistance | Mitigated by `holding_deposit` (economic downside) + `challenge_holding` (active catching) |
-| `block_number` in instructions | Submitted by client, not injected by runtime — trust-based until LEZ exposes it natively |
+| `block_number` in instructions | Submitted by client, trust-based in v1. `logos-co/spel#226` (`ClockContext`) will eliminate this gap — see Upstream Research. |
 | Full zk proof of holding | v1 is challenge-response (economic deterrent); v2 target is ZK proof of data possession (zk-SNARK PoDP, analogous to Filecoin PoDP launched May 2025) ¹ |
 
 ---
@@ -1883,7 +1891,7 @@ Findings from reading `logos-co/spel` v0.4.0 source at `~/basecamp/refs/spel`.
 | **Seed hashing** | Multi-seeds will combine via `sha256(s1 \|\| s2 \|\| ... \|\| sN)`. Seed types: `literal` → UTF-8 zero-padded to 32 bytes; `account` → 32-byte AccountId; `arg` → serialised bytes zero-padded to 32. |
 | **`#[account_type]` on enums** | Enum helper types (`VerificationStatus`, `ItemStatus`, `DisputeStatus`) must carry `#[account_type]` to appear in `SpelIdl::types` and be resolvable by the IDL BFS scanner. Fixed in this doc. |
 | **SpelError variants** | `AccountAlreadyInitialized` (code 1002), `AccountNotInitialized` (1003), `InsufficientBalance` (1004), `Overflow` (1007), `Unauthorized` (1008), `PdaMismatch` (1009). Domain errors use `SpelError::custom(code, message)` (offset 6000). |
-| **Block number** | NOT injected by runtime (confirmed vpavlin 2026-06-01). `block_validity_window` constrains tx validity range but does not expose block height to handlers. LEZ devs are discussing adding it. Trust-based `block_number: u64` arg is the only v1 option. v2 will use runtime-injected height when available. |
+| **Block number** | NOT injected by runtime in v1 (confirmed vpavlin 2026-06-01). `block_validity_window` constrains tx validity range only. **In progress:** `logos-co/spel#226` proposes `ClockContext` (opt-in per-instruction parameter exposing `block_id` + `timestamp`). When it lands, all trust-based `block_number: u64` args are replaced by `ctx: ClockContext` with no change to instruction logic. |
 | **Variable accounts** | `Vec<AccountWithMetadata>` works for rest-style variable-length account lists (confirmed via `batch_update` fixture). `PreserverRegistry` as `Vec<AccountId>` is valid. |
 | **Private PDAs** | Supported via `#[account(init, private_pda, pda = ..., npk = arg("user_npk"))]`. Not used in keeper v1 but available. |
 | **`ProgramContext`** | `ctx: ProgramContext` provides `self_program_id` and `caller_program_id`. Never part of instruction ABI or IDL. Useful for `#[account(owner = self_program_id)]` constraints. |
