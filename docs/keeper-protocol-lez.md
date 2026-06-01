@@ -13,12 +13,16 @@ User joins (free):
   → keeper_protocol::create_user()
       → UserStats PDA initialised, added to PreserverRegistry
 
-User preserves IA item:
-  → Keeper downloads files
-  → Stash uploads to IPFS → collection CID
+User sets storage pledge (client settings):
+  → storage_quota: GB willing to donate
+  → channel subscriptions: IA priority list, community lists, per-institution feeds
+  → per-channel: auto_preserve (fills quota automatically) or require_approval (manual toggle)
+  → client monitors channels, queues collections up to quota, preserves without user action
+
+User preserves IA item (auto or manual):
+  → Keeper downloads files from channel queue
+  → uploads to Logos Storage → collection CID
   → keeper_protocol::register_preservation(ia_id, cid, hashes, ...)
-      → pays registration_fee stable → RewardPool.fee_balance
-      → escrows holding_deposit_amount stable (returned on deregister_item; forfeited on failed challenge)
       → ItemRecord PDA (first-write atomic — first preserver wins)
       → PreservationRecord PDA (per-user per-item; status = Pending)
       → UserStats.keeper_score incremented (soulbound, leaderboard only)
@@ -28,35 +32,17 @@ Every 7 days per item:
       → record.verification_status updated (Pending / Active / Delinquent)
       → UserStats.active_bytes and RewardPool.total_active_bytes maintained
 
-End of each month:
-  → keeper_protocol::claim_monthly_reward(month)
-      → pool_budget     = RewardPool.fee_balance (all fees since last distribution)
-      → reward_per_byte = pool_budget / RewardPool.total_active_bytes
-      → user_payout     = min(user.active_bytes × reward_per_byte, pool_budget × max_user_share)
-      → stable transferred from RewardPool to user
-      → RewardClaim PDA created (claimed = true for this month)
-      → RewardPool.fee_balance reduced by total distributed
-
-At any time (institutions / foundation):
-  → keeper_protocol::fund_pool(amount)
-      → caller transfers `amount` stable directly to RewardPool.fee_balance
-      → no keeper_score, no registration — purely a pool top-up
-      → open to anyone: Internet Archive, donors, grants, universities
-
-At any time (sponsors / institutions):
-  → keeper_protocol::create_item_bounty(ia_id)      ← first time only
-  → keeper_protocol::fund_item_bounty(ia_id, amount)
-      → stable added to SponsorBounty PDA for that specific item
-  → preserver calls keeper_protocol::claim_item_bounty(ia_id, month)
-      → pro-rata payout by record.total_bytes / item.total_active_bytes
-
 At any time (any node — challenge-response audit):
   → keeper_protocol::challenge_holding(ia_id, preserver)
       → challenger asserts CID is unreachable; sets deadline
   → preserver must respond with verify_holding before deadline
   → keeper_protocol::finalize_challenge(ia_id, preserver)
-      → if preserver responded: cleared; challenger pays anti-spam fee
-      → if preserver silent: immediately Delinquent; challenger earns bounty
+      → if preserver responded: cleared; challenger gets keeper_score
+      → if preserver silent: immediately Delinquent; record flagged
+
+// v2 — reward layer (inactive in v1):
+//   fund_pool, claim_monthly_reward, take_monthly_snapshot, snapshot_user,
+//   create_item_bounty, fund_item_bounty, claim_item_bounty
 ```
 
 The on-chain `ItemRecord` is the source of truth — not Beacon, not Cord.
@@ -65,6 +51,59 @@ The on-chain `ItemRecord` is the source of truth — not Beacon, not Cord.
 > instructions). Omitted for brevity: `initialize_program`, `open_dispute`,
 > `vote_on_dispute`, `snapshot_user`, `take_monthly_snapshot`, `withdraw`, `deregister_user`,
 > `deregister_item`, `migrate_score`. See the Instructions section for the complete set.
+
+## Channel Subscriptions
+
+Channels are curated feeds of IA collections worth preserving. The Keeper client
+monitors subscribed channels and automatically fills the user's pledged storage
+quota — no manual curation required.
+
+### Channel types
+
+| Type | Who curates | Example |
+|------|-------------|---------|
+| **IA priority list** | Internet Archive | Collections most at risk, least replicated |
+| **Community list** | Any publisher (URL feed) | "Great 78 Project", "US Gov Docs", topic lists |
+| **Institutional** | Library / university | Collections an institution specifically endorses |
+
+Channels are **off-chain feeds** (JSON over HTTPS or a content-addressed format).
+What goes on-chain is the normal `PreservationRecord` — the channel is just how the
+client decides *what* to preserve automatically.
+
+### Client behaviour
+
+```
+settings.storage_quota = 200 GB          // max total storage donated
+settings.channels = [
+  { url: "https://archive.org/keeper/priority.json", mode: "auto" },
+  { url: "https://example.org/my-list.json",         mode: "approve" },
+]
+```
+
+**`auto` mode** — client fetches channel feed, queues new `(ia_id, CID)` entries,
+downloads and registers them automatically up to `storage_quota`. No user action needed.
+
+**`approve` mode** — client surfaces new entries for the user to accept or skip before
+downloading. Good for collections where the user wants to review first.
+
+**Quota enforcement** — before queuing a new item the client checks:
+`current_stored_bytes + item.total_bytes <= storage_quota`. If the item would exceed
+the quota it is skipped (or queued for approval so the user can decide to expand quota).
+
+**Priority ordering** — within a channel, items are ordered by preservation urgency
+(fewest active preservers first). Client always fills lowest-coverage collections first.
+
+### On-chain footprint
+
+No new account types needed for v1. Each preserved item produces the standard
+`PreservationRecord` + `ItemRecord` via `register_preservation`, regardless of whether
+it came from a channel or was added manually.
+
+Optional future addition (v2): `ChannelSubscription` PDA per `(user, channel_hash)` —
+allows the leaderboard to show which channels a preserver is serving, and enables
+per-channel preservation statistics on-chain.
+
+---
 
 ## Dual Token Model
 
@@ -132,8 +171,6 @@ pub struct PreservationRecord {
     pub block:                u64,
     pub file_count:           u32,
     pub total_bytes:          u64,
-    pub holding_deposit:      u128,  // stable escrowed at registration; returned by deregister_item
-                                     // forfeited to pool if chronically Delinquent
     pub last_verified_block:  u64,
     pub verification_status:  VerificationStatus,
     pub open_challenge_count: u32,  // incremented by challenge_holding; decremented by finalize_challenge
@@ -205,22 +242,17 @@ counter. Updated by `register_preservation` (fees in) and `verify_holding` (byte
 ```rust
 #[account_type]
 pub struct RewardPool {
-    pub fee_balance:            u128,   // stable accumulated from registration fees + institutional grants
-    pub total_active_bytes:     u128,   // sum of active_bytes across all preservers
-    pub registration_fee:       u128,   // stable charged per register_preservation call (into fee_balance)
-    pub holding_deposit_amount: u128,   // stable escrowed per item (returned on deregister, slashed on chronic delinquency)
-    pub max_user_share_bp:           u32,    // basis points cap per user, e.g. 2000 = 20%
-    pub min_hold_blocks:             u64,    // blocks an item must be held before Active
-    pub challenge_bounty_bp:         u32,    // % of holding_deposit paid to successful challenger
-    pub challenge_response_window:   u64,    // blocks preserver has to respond to a challenge
-    pub challenge_spam_fee:          u128,   // stable challenger must lock (lost if wrong)
-    pub delinquency_threshold:       u64,    // blocks since last_verified_block before status → Delinquent
-    pub last_month:                  u32,    // last YYYYMM distributed
-    // Snapshot fields — set once per month by take_monthly_snapshot(); used by claim_monthly_reward
-    // to ensure all claimants in the same month share the same budget (M1 fix)
-    pub snapshot_balance:            u128,   // fee_balance captured at snapshot time
-    pub snapshot_total_active_bytes: u128,   // total_active_bytes captured at snapshot time
-    pub snapshot_month:              u32,    // YYYYMM of the active snapshot; 0 = no snapshot yet
+    pub total_active_bytes:        u128,   // sum of active_bytes across all preservers
+    pub min_hold_blocks:           u64,    // blocks an item must be held before Active
+    pub challenge_response_window: u64,    // blocks preserver has to respond to a challenge
+    pub delinquency_threshold:     u64,    // blocks since last_verified_block before status → Delinquent
+    // v2 reward fields (inactive in v1 — set to 0 at initialize_program):
+    pub fee_balance:               u128,   // stable from institutional top-ups (fund_pool)
+    pub max_user_share_bp:         u32,    // basis points cap per user per month
+    pub last_month:                u32,    // last YYYYMM distributed
+    pub snapshot_balance:          u128,   // fee_balance snapshot for claim_monthly_reward
+    pub snapshot_total_active_bytes: u128, // total_active_bytes snapshot
+    pub snapshot_month:            u32,    // YYYYMM of active snapshot; 0 = none
 }
 ```
 
@@ -381,28 +413,20 @@ pub fn initialize_program(
     #[account(signer)]
     authority: AccountWithMetadata,
 
-    registration_fee:          u128,   // stable per register_preservation call
-    holding_deposit_amount:    u128,   // stable escrowed per item
-    max_user_share_bp:         u32,    // e.g. 2000 = 20% cap per user per month
     min_hold_blocks:           u64,    // e.g. ~30 days of blocks before Pending → Active
     delinquency_threshold:     u64,    // e.g. ~30 days of blocks; gap before Active → Delinquent
-    challenge_bounty_bp:       u32,    // e.g. 5000 = 50% of holding_deposit to challenger
     challenge_response_window: u64,    // e.g. ~3 days of blocks for preserver to respond
-    challenge_spam_fee:        u128,   // stable challenger locks; lost if wrong
 ) -> SpelResult
 // Logic:
-//   pool.fee_balance            = 0
-//   pool.total_active_bytes     = 0
-//   pool.registration_fee       = registration_fee
-//   pool.holding_deposit_amount = holding_deposit_amount
-//   pool.max_user_share_bp      = max_user_share_bp
-//   pool.min_hold_blocks        = min_hold_blocks
-//   pool.delinquency_threshold  = delinquency_threshold
-//   pool.challenge_bounty_bp    = challenge_bounty_bp
+//   pool.total_active_bytes        = 0
+//   pool.min_hold_blocks           = min_hold_blocks
+//   pool.delinquency_threshold     = delinquency_threshold
 //   pool.challenge_response_window = challenge_response_window
-//   pool.challenge_spam_fee     = challenge_spam_fee
-//   pool.last_month             = 0
-//   registry.preservers         = []
+//   // v2 fields zeroed:
+//   pool.fee_balance               = 0
+//   pool.max_user_share_bp         = 0
+//   pool.last_month                = 0
+//   registry.preservers            = []
 ```
 
 ---
@@ -452,10 +476,6 @@ pub fn register_preservation(
     #[account(mut, pda = [literal("stats"), account("preserver")])]
     stats: AccountWithMetadata,
 
-    // fee payment: registration_fee stable transferred from preserver to pool
-    #[account(mut, pda = [literal("pool")])]
-    pool: AccountWithMetadata,
-
     ia_id:          String,
     collection_cid: [u8; 32],
     metadata_hash:  [u8; 32],
@@ -469,10 +489,6 @@ pub fn register_preservation(
 **Logic:**
 
 ```
-transfer pool.registration_fee stable from preserver to pool.fee_balance
-transfer pool.holding_deposit_amount stable from preserver to pool (escrowed — not fee_balance)
-preservation.holding_deposit = pool.holding_deposit_amount
-
 if item does not exist yet (first_preserver == default):
     → set canonical hashes
     → item.block = block_number
@@ -634,7 +650,7 @@ pub fn challenge_holding(
     block_number: u64,   // trust-based v1; replaced by ClockContext.block_id when spel#226 lands
 ) -> SpelResult
 // Logic:
-//   transfer pool.challenge_spam_fee stable from challenger to pool (anti-spam; lost if challenger is wrong)
+//   // v1: no financial stake; spam deterred by holding_deposit requirement to have registered items
 //   // spel#226 upgrade: if block_number - cooldown[challenger][preserver].last_block < pool.challenge_cooldown_blocks
 //   //   → return Err(ChallengeCooldown)  // rate limit across all items for this pair
 //   challenge.ia_id             = ia_id
@@ -647,15 +663,12 @@ pub fn challenge_holding(
 //   record.open_challenge_count += 1    // H3 fix: deregister_item checks > 0
 ```
 
-> **Deployment constraint:** `challenge_spam_fee` must be set so that a winning challenger
-> is net-positive: `challenge_spam_fee ≤ holding_deposit_amount × challenge_bounty_bp / 10_000`.
-> If the spam fee exceeds the expected bounty, honest challengers lose money even on a win —
-> destroying the audit incentive. `initialize_program` should enforce this invariant.
+> **v1 spam deterrent:** challenger must have their own registered items (requires `create_user`
+> and at least one `register_preservation`). Challenging with no skin in the game risks
+> reputation loss if the challenge is frivolous.
 >
 > **Rate limiting (when `spel#226` lands):** add `challenge_cooldown_blocks: u64` to `RewardPool`
-> config and a `cooldown::{challenger}::{preserver}` PDA tracking the last challenge block per pair.
-> This caps challenge rate per `(challenger, preserver)` pair independent of the spam fee —
-> making sustained spam arithmetically impossible regardless of attacker budget.
+> and a `cooldown::{challenger}::{preserver}` PDA tracking the last challenge block per pair.
 
 ---
 
@@ -704,9 +717,8 @@ pub fn finalize_challenge(
 //     record.verification_status = Delinquent
 //     preserver_stats.active_bytes     -= record.total_bytes  (if was Active)
 //     pool.total_active_bytes          -= record.total_bytes  (if was Active)
-//     bounty = record.holding_deposit × pool.challenge_bounty_bp / 10_000
-//     transfer bounty stable from pool to challenger
-//     record.holding_deposit           -= bounty
+//     // v1: no financial bounty; challenger earns keeper_score for successful catch
+//     stats_challenger.keeper_score    += CHALLENGE_SUCCESS_SCORE
 //     challenge.preserver_cleared = false
 //
 //   record.open_challenge_count -= 1    // H3 fix: allow deregister_item when all challenges resolved
@@ -988,9 +1000,6 @@ pub fn deregister_item(
     #[account(mut, pda = [literal("item"), arg("ia_id")])]
     item: AccountWithMetadata,
 
-    #[account(mut, pda = [literal("pool")])]
-    pool: AccountWithMetadata,
-
     // M5 fix: stats is required to decrement active_bytes
     #[account(mut, pda = [literal("stats"), account("user")])]
     stats: AccountWithMetadata,
@@ -1007,9 +1016,6 @@ pub fn deregister_item(
 //     stats.active_bytes          -= record.total_bytes   // *** must decrement or pool total drifts
 //     pool.total_active_bytes     -= record.total_bytes
 //     item.total_active_bytes     -= record.total_bytes
-//   deposit = record.holding_deposit
-//   transfer deposit stable from pool to user
-//   record.holding_deposit      = 0
 //   record.verification_status  = Delinquent          // item no longer maintained
 ```
 
@@ -1127,7 +1133,7 @@ data doubles, reward per byte halves. If few people preserve, rate rises — inc
 others to fill the gap. The pool self-balances.
 
 **Pool sustainability:** two inflow sources:
-- **Registration fees** — every `register_preservation` call transfers `registration_fee`
+- **Institutional top-ups** — `fund_pool` (v2): any party tops up the reward pool directly
   stable to the pool. More preservation activity = larger pool.
 - **Institutional grants** — `fund_pool` accepts any stable transfer from any party.
   Internet Archive, universities, or grant programs can top up the pool directly
@@ -1515,7 +1521,7 @@ C++ bindings for all instructions directly from the IDL — no hand-written IPC 
 | First-inscriber atomicity | Handler checks `first_preserver == AccountId::default()` on `#[account(mut)]` item — first writer wins by blockchain ordering |
 | On-chain CID record | `ItemRecord` account — queryable by anyone, independent of Beacon |
 | Per-user stats + soulbound score | `UserStats` PDA — `keeper_score` (leaderboard) and `active_bytes` (reward share) |
-| Fee-funded reward pool | `register_preservation` charges `registration_fee` + `holding_deposit` per call |
+| Reward pool (v2) | `fund_pool` — permissionless top-up; split-deposit model planned for v2 |
 | Institutional pool funding | `fund_pool` — permissionless top-up; open to Internet Archive, grants, donors, universities |
 | Monthly stable reward | `claim_monthly_reward` transfers stable pro-rata by active_bytes; hard cap per user |
 | Holding accountability | Per-item `holding_deposit` escrowed; forfeited via `finalize_challenge` if preserver fails challenge |
@@ -1720,7 +1726,7 @@ See Research Footnotes for sources.
 | Gap | Severity | v1 Status | Resolution |
 |-----|----------|-----------|------------|
 | **A** — No cryptographic proof; verification self-reported | Critical | Partial | `challenge_holding` + `finalize_challenge` add economic deterrent; full ZK proof deferred to v2 |
-| **B** — No collateral; zero downside for fake preservation | High | Resolved | `holding_deposit_amount` in `RewardPool`; per-item deposit escrowed at registration; forfeited on challenge failure |
+| **B** — No collateral; zero downside for fake preservation | High | v1: partial (keeper_score at risk) | v2: split deposit — half to pool non-refundable, half escrowed and forfeited on challenge failure |
 | **C** — Cold start / empty pool kills participation | High | Resolved | Bootstrap strategy documented; foundation seed + public funding schedule required pre-launch |
 | **D** — Third-party verifier has no economic incentive | Medium | Resolved | `challenge_holding` pays `challenge_bounty_bp` of holding deposit to successful challenger |
 | **E** — `PreserverRegistry` grows forever; ghost accounts | Medium | Resolved | `deregister_user` zeroes active_bytes, sets `is_deregistered`; leaderboard filters flag |
