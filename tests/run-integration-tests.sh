@@ -189,12 +189,25 @@ log_pass "item reached status: done"
 STATUS_R=$(curl -sf "$BRIDGE_URL/status/$TEST_ITEM" 2>/dev/null || echo "{}")
 COLLECTION_CID=$(extract_field "$STATUS_R" "cid")
 
-# Get txHash from keeper log file (not exposed via bridge)
-LOG_ENTRY=$(find_log_entry "$TEST_ITEM")
+# txHash is written to the log AFTER the item reaches "done" — keeper polls
+# beacon asynchronously. Poll keeper-log.json for up to 5 min for txHash.
+echo "  waiting for txHash to appear in keeper log..."
 TX_HASH=""
-if [[ -n "$LOG_ENTRY" ]]; then
-    TX_HASH=$(extract_field "$LOG_ENTRY" "txHash")
-fi
+TX_WAIT=0
+TX_TIMEOUT=300
+while [[ $TX_WAIT -lt $TX_TIMEOUT ]]; do
+    LOG_ENTRY=$(find_log_entry "$TEST_ITEM")
+    if [[ -n "$LOG_ENTRY" ]]; then
+        TX_HASH=$(extract_field "$LOG_ENTRY" "txHash")
+        if [[ -n "$TX_HASH" ]]; then
+            printf "  txHash appeared after %ds\n" "$TX_WAIT"
+            break
+        fi
+    fi
+    sleep 10
+    TX_WAIT=$((TX_WAIT + 10))
+done
+LOG_ENTRY=$(find_log_entry "$TEST_ITEM")
 
 # txHash must be non-empty 64-char lowercase hex
 if [[ -n "$TX_HASH" ]] && echo "$TX_HASH" | grep -qE '^[0-9a-f]{64}$'; then

@@ -203,18 +203,17 @@ echo ""
 # writes to queue.json. So we remove the actual file directly from shell.
 echo "Setup (clear stale state)"
 
-# Remove stale queue.json from all logoscore persistence dirs (there can be
-# multiple: logos_host, .logos_host.elf, etc. — each logoscore binary version
-# creates its own AppDataLocation dir). Exclude the Basecamp module_data dir.
+# Remove stale state from all logoscore keeper persistence dirs.
+# Search by directory name "keeper" — not by file presence — so log-only
+# dirs (no queue.json) are also cleaned. Exclude Basecamp's module_data dir.
 while IFS= read -r KEEPER_DATA_DIR; do
     rm -f "$KEEPER_DATA_DIR/queue.json"
     rm -f "$KEEPER_DATA_DIR/keeper-log.json"
     echo "  cleared $KEEPER_DATA_DIR"
-done < <(find "$HOME/.local/share" -maxdepth 4 \
-    -name "queue.json" -path "*/keeper/*" ! -path "*/LogosBasecamp/*" \
-    -exec dirname {} \; 2>/dev/null)
+done < <(find "$HOME/.local/share" -maxdepth 4 -type d \
+    -name "keeper" ! -path "*/LogosBasecamp/*" 2>/dev/null)
 
-echo "  (if no dirs listed above, queue was already clean)"
+echo "  (if no dirs listed above, state was already clean)"
 echo ""
 
 # ── 1. Config read ────────────────────────────────────────────────────────────
@@ -296,38 +295,46 @@ assert_valid_json "cancelItem nonexistent id → valid JSON (no crash)" "$R"
 
 echo ""
 
-# ── 8. Paired extensions — add invalid pubkey ────────────────────────────────
-echo "Paired extensions — validation"
+# ── 8–10. Paired extensions (feature-gated) ───────────────────────────────────
+# addPairedExtension/removePairedExtension/getPairedExtensions were added in
+# the feature/signed-auth branch and are not yet in main. Check at runtime
+# whether the installed .so exposes them before running these tests.
+echo "Paired extensions — capability check"
 
-P=$(param_file "short_key.json" '"tooshort"')
-OUT=$(run_calls "keeper.addPairedExtension(@$P)")
-R=$(result1 "$OUT")
-assert_error_or_false "addPairedExtension short key → error/success:false" "$R"
+PAIRED_OUT=$(run_calls "keeper.getPairedExtensions()")
+HAS_PAIRED=$(echo "$PAIRED_OUT" | python3 -c \
+    "import sys; print('yes' if 'Method call successful' in sys.stdin.read() else 'no')" 2>/dev/null)
 
-echo ""
+if [[ "$HAS_PAIRED" == "yes" ]]; then
+    echo "  installed .so has paired extension APIs — running tests"
+    echo ""
 
-# ── 9. getPairedExtensions ───────────────────────────────────────────────────
-echo "Paired extensions — list"
+    echo "Paired extensions — validation"
+    P=$(param_file "short_key.json" '"tooshort"')
+    OUT=$(run_calls "keeper.addPairedExtension(@$P)")
+    R=$(result1 "$OUT")
+    assert_error_or_false "addPairedExtension short key → error/success:false" "$R"
+    echo ""
 
-OUT=$(run_calls "keeper.getPairedExtensions()")
-R=$(result1 "$OUT")
-assert_is_array "getPairedExtensions returns array" "$R"
+    echo "Paired extensions — list"
+    R=$(result1 "$PAIRED_OUT")
+    assert_is_array "getPairedExtensions returns array" "$R"
+    echo ""
 
-echo ""
-
-# ── 10. Add + remove valid pubkey lifecycle ───────────────────────────────────
-echo "Paired extensions — add + remove lifecycle"
-
-# Pass pubkey as raw string (no JSON quotes) — @file passes contents verbatim
-P=$(param_file "valid_key.txt" "$VALID_PUBKEY")
-OUT=$(run_calls "keeper.addPairedExtension(@$P)" "keeper.removePairedExtension(@$P)")
-mapfile -t RES < <(echo "$OUT" | grep "^Method call successful. Result:" | sed 's/^Method call successful. Result: //')
-R0="${RES[0]:-}"
-R1="${RES[1]:-}"
-assert_success "addPairedExtension valid key → success"   "$R0"
-assert_success "removePairedExtension valid key → success" "$R1"
-
-echo ""
+    echo "Paired extensions — add + remove lifecycle"
+    # Pass pubkey as raw string (no JSON quotes) — @file passes contents verbatim
+    P=$(param_file "valid_key.txt" "$VALID_PUBKEY")
+    OUT=$(run_calls "keeper.addPairedExtension(@$P)" "keeper.removePairedExtension(@$P)")
+    mapfile -t RES < <(echo "$OUT" | grep "^Method call successful. Result:" | sed 's/^Method call successful. Result: //')
+    R0="${RES[0]:-}"
+    R1="${RES[1]:-}"
+    assert_success "addPairedExtension valid key → success"   "$R0"
+    assert_success "removePairedExtension valid key → success" "$R1"
+    echo ""
+else
+    echo "  (skipped — paired extension APIs not in installed .so)"
+    echo ""
+fi
 
 # ── 11. clearQueue / clearLog — no crash ─────────────────────────────────────
 echo "clearQueue / clearLog (empty)"
