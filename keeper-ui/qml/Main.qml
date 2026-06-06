@@ -445,6 +445,39 @@ Item {
                 Item { Layout.fillWidth: true }
 
                 Text {
+                    text: "copy"
+                    font.pixelSize: 11
+                    color: copyAllArea.containsMouse ? root.textSecondary : root.textMuted
+                    visible: logModel.count > 0
+
+                    MouseArea {
+                        id: copyAllArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            var text = "# keeper log\n"
+                            for (var i = 0; i < logModel.count; i++) {
+                                var e = logModel.get(i)
+                                var stashLine = "[" + fmtTime(e.entryTs) + "] Stash → Logos Storage: " + e.entryTitle
+                                if (e.entrySize) stashLine += " (" + e.entrySize + ")"
+                                if (e.entryCids) stashLine += ", CIDs: " + e.entryCids
+                                text += stashLine + "\n"
+                                if (e.entryCollectionCid || e.entryExplorerUrl) {
+                                    var beaconLine = "[" + fmtTime(e.entryTs) + "] Beacon → Logos Blockchain: "
+                                    beaconLine += e.entryExplorerUrl ? e.entryExplorerUrl : "confirming…"
+                                    text += beaconLine + "\n"
+                                }
+                            }
+                            clipboard.text = text
+                            clipboard.forceActiveFocus()
+                            clipboard.selectAll()
+                            clipboard.copy()
+                        }
+                    }
+                }
+
+                Text {
                     text: "Clear"
                     font.pixelSize: 11
                     color: clearArea.containsMouse ? root.textSecondary : root.textMuted
