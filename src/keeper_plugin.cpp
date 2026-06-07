@@ -42,7 +42,9 @@ void KeeperPlugin::initLogos(LogosAPI* api)
     // and QRO event emissions, where std::bad_alloc has been observed.
     QTimer::singleShot(2000, this, [this]{
         if (logosAPI) {
-            stashClient_  = logosAPI->getClient("stash");
+            // Don't call getClient("stash") here — stash may not be loaded yet and
+            // getClient() on an unloaded module causes std::bad_alloc. Stash client
+            // is obtained lazily in uploadToStash() which retries if stash is null.
             beaconClient_ = logosAPI->getClient("logos_beacon");
         }
         advanceQueue();
