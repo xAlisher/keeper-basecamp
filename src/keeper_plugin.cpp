@@ -56,7 +56,7 @@ void KeeperPlugin::initLogos(LogosAPI* api)
                 QString idCopy  = id;
                 QString cidCopy = cid;
                 QTimer::singleShot(3000, this, [this, idCopy, cidCopy]() {
-                    pollForTxHash(idCopy, cidCopy, 72);
+                    pollForTxHash(idCopy, cidCopy, 120);
                 });
             }
         }
@@ -543,7 +543,7 @@ void KeeperPlugin::inscribeToBeacon(const QString& identifier, const QString& ci
         QString cidCopy = cid;
         QString idCopy  = identifier;
         QTimer::singleShot(5000, this, [this, idCopy, cidCopy]() {
-            pollForTxHash(idCopy, cidCopy, 24); // up to 24 × 5s = 2 min
+            pollForTxHash(idCopy, cidCopy, 120); // up to 120 × 5s = 10 min
         });
     }
 }
@@ -557,28 +557,41 @@ void KeeperPlugin::pollForTxHash(const QString& identifier, const QString& cid, 
 
     for (const auto& v : entries) {
         QJsonObject e = v.toObject();
-        if (e["cid"].toString() == cid) {
-            QString txHash = e["inscriptionId"].toString();
-            if (!txHash.isEmpty()) {
-                // Update the log entry with the tx hash and re-save
-                for (auto& obj : log_) {
-                    if (obj["id"].toString() == identifier) {
-                        obj["txHash"] = txHash;
-                        break;
-                    }
-                }
-                QJsonArray arr;
-                for (const auto& o : log_) arr.append(o);
-                QFile f(persistPath("keeper-log.json"));
-                if (f.open(QIODevice::WriteOnly))
-                    f.write(QJsonDocument(arr).toJson(QJsonDocument::Compact));
-                emitEvent("logUpdated", {QVariantMap{{"id", identifier}, {"txHash", txHash}}});
-                return;
-            }
-            break; // found the entry but no tx hash yet — keep polling
+        if (e["cid"].toString() != cid) continue;
+
+        QString txHash          = e[QStringLiteral("inscriptionId")].toString();
+        QString inscriptionStatus = e[QStringLiteral("status")].toString();
+        int slotFrom            = e[QStringLiteral("slotFrom")].toInt(0);
+        int libAtSubmit         = e[QStringLiteral("libAtSubmit")].toInt(0);
+
+        // Update keeper log entry with current beacon status on every poll
+        bool changed = false;
+        for (auto& obj : log_) {
+            if (obj[QStringLiteral("id")].toString() != identifier) continue;
+            if (!txHash.isEmpty())          { obj[QStringLiteral("txHash")]           = txHash;           changed = true; }
+            if (!inscriptionStatus.isEmpty()){ obj[QStringLiteral("inscriptionStatus")]= inscriptionStatus; changed = true; }
+            if (slotFrom > 0)               { obj[QStringLiteral("slotFrom")]         = slotFrom;          changed = true; }
+            if (libAtSubmit > 0)            { obj[QStringLiteral("libAtSubmit")]       = libAtSubmit;       changed = true; }
+            break;
         }
+        if (changed) {
+            QJsonArray arr;
+            for (const auto& o : log_) arr.append(o);
+            QFile f(persistPath("keeper-log.json"));
+            if (f.open(QIODevice::WriteOnly))
+                f.write(QJsonDocument(arr).toJson(QJsonDocument::Compact));
+            emitEvent("logUpdated", {QVariantMap{
+                {QStringLiteral("id"),     identifier},
+                {QStringLiteral("status"), inscriptionStatus},
+                {QStringLiteral("txHash"), txHash}
+            }});
+        }
+
+        if (!txHash.isEmpty()) return;  // confirmed — stop polling
+        break;                          // found entry, not confirmed yet — keep polling
     }
 
+    // Poll for up to 120 × 5s = 10 min (covers the ~8-min finalization window)
     if (attempts > 0) {
         QTimer::singleShot(5000, this, [this, identifier, cid, attempts]() {
             pollForTxHash(identifier, cid, attempts - 1);
