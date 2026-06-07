@@ -36,32 +36,11 @@ void KeeperPlugin::initLogos(LogosAPI* api)
     // httpBridge_ = new KeeperHttpBridge(this, this);
     // bridgeRunning_ = httpBridge_->listen(7355);
 
-    // Defer client init + queue resume so the event loop is running.
-    // Pre-initialising stashClient_ and beaconClient_ HERE (before any
-    // downloads start) avoids calling getClient() after download callbacks
-    // and QRO event emissions, where std::bad_alloc has been observed.
+    // Defer queue resume so the event loop is running.
+    // getClient() must NOT be called here — crashes if target module not yet loaded.
+    // Clients are obtained lazily at point-of-use with null guards.
     QTimer::singleShot(2000, this, [this]{
-        if (logosAPI) {
-            // Don't call getClient("stash") here — stash may not be loaded yet and
-            // getClient() on an unloaded module causes std::bad_alloc. Stash client
-            // is obtained lazily in uploadToStash() which retries if stash is null.
-            beaconClient_ = logosAPI->getClient("logos_beacon");
-        }
         advanceQueue();
-        // Resume tx hash polling for log entries that have a collection CID but no tx hash yet
-        // (handles crash/restart while "confirming…")
-        for (const auto& obj : std::as_const(log_)) {
-            QString id     = obj["id"].toString();
-            QString cid    = obj["collectionCid"].toString();
-            QString txHash = obj["txHash"].toString();
-            if (!id.isEmpty() && !cid.isEmpty() && txHash.isEmpty()) {
-                QString idCopy  = id;
-                QString cidCopy = cid;
-                QTimer::singleShot(3000, this, [this, idCopy, cidCopy]() {
-                    pollForTxHash(idCopy, cidCopy, 120);
-                });
-            }
-        }
     });
     qDebug() << "KeeperPlugin: initialized";
 }
@@ -541,6 +520,7 @@ void KeeperPlugin::inscribeToBeacon(const QString& identifier, const QString& ci
 
     // Poll beacon for the tx hash (inscriptionId) once the inscription confirms.
     // pinCid queues async — the tx hash is set later by confirmInscription.
+    if (!beaconClient_ && logosAPI) beaconClient_ = logosAPI->getClient("logos_beacon");
     if (beaconClient_ && !cid.isEmpty()) {
         QString cidCopy = cid;
         QString idCopy  = identifier;
@@ -552,6 +532,7 @@ void KeeperPlugin::inscribeToBeacon(const QString& identifier, const QString& ci
 
 void KeeperPlugin::pollForTxHash(const QString& identifier, const QString& cid, int attempts)
 {
+    if (!beaconClient_ && logosAPI) beaconClient_ = logosAPI->getClient("logos_beacon");
     if (!beaconClient_) return;
 
     QString logJson = beaconClient_->invokeRemoteMethod("logos_beacon", "getInscriptionLog").toString();
