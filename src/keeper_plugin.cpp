@@ -32,9 +32,9 @@ void KeeperPlugin::initLogos(LogosAPI* api)
 
     loadQueue();
 
-    // Start HTTP bridge for the Chrome extension (localhost:7355)
-    httpBridge_ = new KeeperHttpBridge(this, this);
-    bridgeRunning_ = httpBridge_->listen(7355);
+    // HTTP bridge disabled — Qt6HttpServer not in AppImage → dual-Qt heap corruption
+    // httpBridge_ = new KeeperHttpBridge(this, this);
+    // bridgeRunning_ = httpBridge_->listen(7355);
 
     // Defer client init + queue resume so the event loop is running.
     // Pre-initialising stashClient_ and beaconClient_ HERE (before any

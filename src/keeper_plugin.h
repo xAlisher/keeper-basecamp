@@ -9,7 +9,8 @@
 #include <QTimer>
 
 #include "keeper_interface.h"
-#include "keeper_http_bridge.h"
+// KeeperHttpBridge disabled — Qt6HttpServer not in AppImage → dual-Qt heap corruption
+// #include "keeper_http_bridge.h"
 #include "logos_api.h"
 #include "logos_api_client.h"
 
@@ -95,7 +96,8 @@ private:
 
     QNetworkAccessManager* nam_ = nullptr;
 
-    KeeperHttpBridge* httpBridge_    = nullptr;
+    // KeeperHttpBridge disabled — Qt6HttpServer not in AppImage → dual-Qt heap corruption
+    // KeeperHttpBridge* httpBridge_    = nullptr;
     bool              bridgeRunning_ = false;
     quint16           bridgePort_    = 7355;
 
