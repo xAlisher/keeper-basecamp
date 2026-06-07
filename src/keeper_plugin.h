@@ -74,6 +74,9 @@ private:
     void    pollForTxHash(const QString& identifier, const QString& cid, int attempts);
     void    advanceQueue();
 
+    // IPC client init (must run before any network/emitEvent activity)
+    void tryInitClients(int attempt);
+
     // Persistence
     void loadQueue();
     void saveQueue();

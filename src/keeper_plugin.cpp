@@ -54,12 +54,12 @@ void KeeperPlugin::initLogos(LogosAPI* api)
     httpBridge_    = new KeeperHttpBridge(this, this);
     bridgeRunning_ = httpBridge_->listen(7355);
 
-    // Defer queue resume so the event loop is running.
-    // getClient() must NOT be called here — crashes if target module not yet loaded.
-    // Clients are obtained lazily at point-of-use with null guards.
-    QTimer::singleShot(2000, this, [this]{
-        advanceQueue();
-    });
+    // Pre-init IPC clients before any network activity.
+    // getClient() throws std::bad_alloc when the target module isn't loaded, AND
+    // after any emitEvent/downloadProgress calls (degraded QRO allocator state).
+    // Must be called BEFORE advanceQueue() triggers any network/download activity.
+    // Retry every 5s until both clients are ready, then start queue processing.
+    QTimer::singleShot(2000, this, [this]{ tryInitClients(0); });
     qDebug() << "KeeperPlugin: initialized";
 }
 
@@ -209,6 +209,37 @@ QString KeeperPlugin::setConfig(const QString& json)
     if (obj.contains("maxFilesPerItem"))  maxFilesPerItem_  = obj["maxFilesPerItem"].toInt(maxFilesPerItem_);
     if (obj.contains("skipDerivatives"))  skipDerivatives_  = obj["skipDerivatives"].toBool(skipDerivatives_);
     return R"({"success":true})";
+}
+
+// ── IPC client init ──────────────────────────────────────────────────────────
+
+void KeeperPlugin::tryInitClients(int attempt)
+{
+    if (!logosAPI) return;
+
+    if (!stashClient_)
+        stashClient_  = safeGetClient(logosAPI, "stash");
+    if (!beaconClient_)
+        beaconClient_ = safeGetClient(logosAPI, "logos_beacon");
+
+    const bool stashOk  = stashClient_  != nullptr;
+    const bool beaconOk = beaconClient_ != nullptr;
+
+    KTRACEF("tryInitClients attempt=%d stash=%s beacon=%s",
+            attempt, stashOk ? "ok" : "not ready", beaconOk ? "ok" : "not ready");
+
+    if (!stashOk || !beaconOk) {
+        // Retry every 5 s for up to 120 s (24 attempts), then give up.
+        if (attempt < 24) {
+            QTimer::singleShot(5000, this, [this, attempt]{ tryInitClients(attempt + 1); });
+        } else {
+            qWarning() << "KeeperPlugin: stash/beacon not available after 120s — queue disabled";
+        }
+        return;
+    }
+
+    // Both ready — start queue processing.
+    advanceQueue();
 }
 
 // ── Queue engine ─────────────────────────────────────────────────────────────
@@ -424,12 +455,7 @@ void KeeperPlugin::uploadToStash(const QString& identifier, const QString& local
     // Files in /tmp are cleaned up by the OS; we also clean them in finishItem.
 
     // stashClient_ is pre-initialised in initLogos; this guard is a safety net only.
-    KTRACEF("uploadToStash - stashClient_=%p logosAPI=%p", (void*)stashClient_, (void*)logosAPI);
-    if (!stashClient_ && logosAPI) {
-        KTRACE("calling safeGetClient(stash)");
-        stashClient_ = safeGetClient(logosAPI, "stash");
-        KTRACEF("safeGetClient(stash) returned %p", (void*)stashClient_);
-    }
+    KTRACEF("uploadToStash - stashClient_=%p", (void*)stashClient_);
 
     KeeperItem* item = nullptr;
     for (auto& i : queue_)
@@ -453,22 +479,21 @@ void KeeperPlugin::uploadToStash(const QString& identifier, const QString& local
             pollForFileCid(id2, name2, path2, 300);
         });
     } else {
-        // Stash not yet loaded — retry in 5 s rather than failing immediately.
-        qDebug() << "KeeperPlugin: stash not ready, retrying upload in 5s for" << fileName;
-        QString id2   = identifier;
-        QString path2 = localPath;
-        QString name2 = fileName;
-        QTimer::singleShot(5000, this, [this, id2, path2, name2]() {
-            uploadToStash(id2, path2, name2);
-        });
+        // stashClient_ must be set by tryInitClients() before advanceQueue() runs.
+        // This branch should be unreachable in normal operation.
+        qWarning() << "KeeperPlugin: stashClient_ null in uploadToStash — skipping" << fileName;
+        // Mark file failed and advance.
+        KeeperItem* it = nullptr;
+        for (auto& i : queue_) if (i.identifier == identifier) { it = &i; break; }
+        if (it) { it->currentFile++; }
+        processNextFile();
     }
 }
 
 void KeeperPlugin::pollForFileCid(const QString& identifier, const QString& fileName,
                                    const QString& tmpPath, int attempts)
 {
-    if (!stashClient_ && logosAPI)
-        stashClient_ = safeGetClient(logosAPI, "stash");
+    // stashClient_ set by tryInitClients() before queue processing starts
 
     if (stashClient_) {
         QString latestJson = stashClient_->invokeRemoteMethod("stash", "getLatestLogosResult").toString();
@@ -557,7 +582,6 @@ void KeeperPlugin::inscribeToBeacon(const QString& identifier, const QString& ci
 
     // Poll beacon for the tx hash (inscriptionId) once the inscription confirms.
     // pinCid queues async — the tx hash is set later by confirmInscription.
-    if (!beaconClient_ && logosAPI) beaconClient_ = safeGetClient(logosAPI, "logos_beacon");
     if (beaconClient_ && !cid.isEmpty()) {
         QString cidCopy = cid;
         QString idCopy  = identifier;
@@ -569,7 +593,6 @@ void KeeperPlugin::inscribeToBeacon(const QString& identifier, const QString& ci
 
 void KeeperPlugin::pollForTxHash(const QString& identifier, const QString& cid, int attempts)
 {
-    if (!beaconClient_ && logosAPI) beaconClient_ = safeGetClient(logosAPI, "logos_beacon");
     if (!beaconClient_) return;
 
     QString logJson = beaconClient_->invokeRemoteMethod("logos_beacon", "getInscriptionLog").toString();
