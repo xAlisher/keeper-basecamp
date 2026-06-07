@@ -21,6 +21,12 @@ Item {
     property bool   pollBusy:       false
     property bool   bridgeRunning:  false
     property int    bridgePort:     7355
+    property int    currentLibSlot: 0
+
+    // Upload handoff: QML drives stash IPC (getClient is broken in C++)
+    property var    pendingUpload:  null   // {id, file, path} while uploading
+    property int    uploadAttempts: 0
+    property var    beaconLogMap:   ({})   // cid → {txHash, slotFrom, libAtSubmit, status}
 
     // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -76,6 +82,10 @@ Item {
             return
         }
 
+        // Current lib_slot for inscription progress bars
+        var niRaw = callModuleParse(logos.callModule("logos_beacon", "getNodeInfo", []))
+        if (niRaw && niRaw.lib_slot) root.currentLibSlot = niRaw.lib_slot
+
         // Bridge status
         var bRaw = callModuleParse(logos.callModule("keeper", "getBridgeStatus", []))
         if (bRaw) {
@@ -107,6 +117,33 @@ Item {
             }
         }
 
+        // Beacon log — build cid → inscription info map for keeper log display
+        var bLogRaw = callModuleParse(logos.callModule("logos_beacon", "getInscriptionLog", []))
+        var bMap = {}
+        if (Array.isArray(bLogRaw)) {
+            for (var bi = 0; bi < bLogRaw.length; bi++) {
+                var be = bLogRaw[bi]
+                if (be.cid) bMap[be.cid] = {
+                    txHash:     be.inscriptionId || "",
+                    slotFrom:   be.slotFrom      || 0,
+                    libAtSubmit: be.libAtSubmit  || 0,
+                    status:     be.status        || ""
+                }
+            }
+        }
+        root.beaconLogMap = bMap
+
+        // Stash upload handoff: check for a pending upload from C++
+        if (!root.pendingUpload) {
+            var puRaw = callModuleParse(logos.callModule("keeper", "getPendingUpload", []))
+            if (puRaw && puRaw.path) {
+                root.pendingUpload  = puRaw
+                root.uploadAttempts = 0
+                logos.callModule("stash", "upload", [puRaw.path, "keeper"])
+                stashPollTimer.start()
+            }
+        }
+
         // Log — full rebuild each poll so txHash updates are picked up
         var lRaw = callModuleParse(logos.callModule("keeper", "getLog", []))
         if (Array.isArray(lRaw)) {
@@ -120,17 +157,22 @@ Item {
                         if (c) cidList.push(fmtCid(c))
                     }
                 }
-                var txHash = entry.txHash || ""
+                var collCid = entry.collectionCid || ""
+                var bEntry  = collCid ? (root.beaconLogMap[collCid] || {}) : {}
+                var txHash  = bEntry.txHash || ""
                 logModel.append({
                     entryTs:    entry.ts    || 0,
                     entryTitle: entry.title || entry.id || "",
                     entryCids:  cidList.join(", "),
                     entrySize:  fmtSize(entry.totalSize || 0),
-                    entryCollectionCid: entry.collectionCid || "",
+                    entryCollectionCid: collCid,
                     entryTxHash: txHash,
                     entryExplorerUrl: txHash
                         ? "https://testnet.blockchain.logos.co/web/explorer/transactions/" + txHash
-                        : ""
+                        : "",
+                    entryInscriptionStatus: bEntry.status || (txHash ? "confirmed" : (collCid ? "submitted" : "")),
+                    entrySlotFrom:    bEntry.slotFrom    || 0,
+                    entryLibAtSubmit: bEntry.libAtSubmit || 0
                 })
             }
         }
@@ -145,6 +187,38 @@ Item {
         running: true
         repeat: true
         onTriggered: root.refresh()
+    }
+
+    // Polls stash getLatestLogosResult after triggering an upload
+    Timer {
+        id: stashPollTimer
+        interval: 2000
+        running: false
+        repeat: true
+        onTriggered: {
+            if (!root.pendingUpload) { stop(); return }
+            root.uploadAttempts++
+            if (root.uploadAttempts > 60) {
+                // Timeout after 120s — advance without CID
+                var pu = root.pendingUpload
+                root.pendingUpload = null
+                stop()
+                logos.callModule("keeper", "onUploadResult", [pu.id, pu.file, ""])
+                return
+            }
+            var latestRaw = logos.callModule("stash", "getLatestLogosResult", [])
+            var latest = root.callModuleParse(latestRaw)
+            if (latest && latest.cid && latest.file) {
+                var latestBase = latest.file.split("/").pop().split("\\").pop()
+                var pendingBase = root.pendingUpload.path.split("/").pop().split("\\").pop()
+                if (latestBase === pendingBase) {
+                    var pu2 = root.pendingUpload
+                    root.pendingUpload = null
+                    stop()
+                    logos.callModule("keeper", "onUploadResult", [pu2.id, pu2.file, latest.cid])
+                }
+            }
+        }
     }
 
     Component.onCompleted: root.refresh()
@@ -489,7 +563,8 @@ Item {
                     onCountChanged: Qt.callLater(() => logView.positionViewAtEnd())
                     model: ListModel { id: logModel }
 
-                    delegate: Column {
+                    delegate: Item {
+                        id: logDel
                         required property int    entryTs
                         required property string entryTitle
                         required property string entryCids
@@ -497,76 +572,143 @@ Item {
                         required property string entryCollectionCid
                         required property string entryTxHash
                         required property string entryExplorerUrl
+                        required property string entryInscriptionStatus
+                        required property int    entrySlotFrom
+                        required property int    entryLibAtSubmit
 
                         width: logView.width
-                        spacing: 1
+                        implicitHeight: logDelCol.implicitHeight + 4
 
-                        // Stash line
-                        TextEdit {
-                            width: parent.width
-                            text: {
-                                var t = "[" + fmtTime(entryTs) + "] Stash → Logos Storage: " + entryTitle
-                                if (entrySize)  t += " (" + entrySize + ")"
-                                if (entryCids)  t += ", CIDs: " + entryCids
-                                return t
-                            }
-                            font.pixelSize: 11
-                            font.family: "monospace"
-                            color: root.textSecondary
-                            wrapMode: TextEdit.Wrap
-                            readOnly: true
-                            selectByMouse: true
+                        property bool inscInFlight: entryCollectionCid !== "" && entryTxHash === ""
+                        property bool inscDone:     entryTxHash !== ""
+
+                        // Progress bar value: beacon lib advancing toward slotFrom
+                        property real inscProgress: {
+                            if (inscDone) return 1.0
+                            if (entrySlotFrom <= 0 || entryLibAtSubmit <= 0) return 0.0
+                            var total = entrySlotFrom - entryLibAtSubmit
+                            if (total <= 0) return 0.0
+                            var elapsed = root.currentLibSlot - entryLibAtSubmit
+                            return Math.min(1.0, Math.max(0.0, elapsed / total))
                         }
 
-                        // Beacon line
-                        RowLayout {
-                            width: parent.width
-                            spacing: 6
-                            visible: entryExplorerUrl !== "" || entryCollectionCid !== ""
+                        property string inscTimeEst: {
+                            if (inscDone || entrySlotFrom <= 0 || root.currentLibSlot <= 0) return ""
+                            var rem = entrySlotFrom - root.currentLibSlot
+                            if (rem <= 0) return ""
+                            var mins = Math.floor(rem / 60)
+                            var secs = rem % 60
+                            return "~" + mins + ":" + (secs < 10 ? "0" : "") + secs
+                        }
 
+                        ColumnLayout {
+                            id: logDelCol
+                            anchors { left: parent.left; right: parent.right; top: parent.top; topMargin: 2 }
+                            spacing: 3
+
+                            // Stash line
                             TextEdit {
                                 Layout.fillWidth: true
-                                wrapMode: TextEdit.WrapAnywhere
-                                readOnly: true
-                                selectByMouse: true
+                                text: {
+                                    var t = "[" + fmtTime(entryTs) + "] Stash → Logos Storage: " + entryTitle
+                                    if (entrySize) t += " (" + entrySize + ")"
+                                    if (entryCids) t += ",  CIDs: " + entryCids
+                                    return t
+                                }
                                 font.pixelSize: 11
                                 font.family: "monospace"
-                                textFormat: TextEdit.RichText
-                                text: {
-                                    var prefix = "[" + fmtTime(entryTs) + "] Beacon → Logos Blockchain: "
-                                    var url = entryExplorerUrl
-                                    var muted = root.textMuted
-                                    var secondary = root.textSecondary
-                                    var green = root.successGreen
-                                    if (url)
-                                        return "<span style='color:" + secondary + "'>" + prefix + "</span>"
-                                             + "<span style='color:" + green + "'>" + url + "</span>"
-                                    if (entryCollectionCid)
-                                        return "<span style='color:" + secondary + "'>" + prefix + "</span>"
-                                             + "<span style='color:" + muted + "'>confirming\u2026</span>"
-                                    return ""
-                                }
+                                color: root.textSecondary
+                                wrapMode: TextEdit.Wrap
+                                readOnly: true
+                                selectByMouse: true
                             }
 
-                            Text {
-                                id: copyBtn
-                                visible: entryExplorerUrl !== ""
-                                text: "copy"
-                                font.pixelSize: 10
-                                color: copyBtnArea.containsMouse ? root.textPrimary : root.textMuted
-                                Layout.alignment: Qt.AlignVCenter
+                            // Beacon line — only if an inscription exists
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 6
+                                visible: entryCollectionCid !== ""
 
-                                MouseArea {
-                                    id: copyBtnArea
-                                    anchors.fill: parent
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: {
-                                        clipboard.text = entryExplorerUrl
-                                        clipboard.forceActiveFocus()
-                                        clipboard.selectAll()
-                                        clipboard.copy()
+                                Text {
+                                    text: "[" + fmtTime(entryTs) + "] Beacon → Logos Blockchain:"
+                                    font.pixelSize: 11
+                                    font.family: "monospace"
+                                    color: root.textSecondary
+                                }
+
+                                // Confirmed: truncated hash
+                                Text {
+                                    visible: logDel.inscDone
+                                    text: entryTxHash.substring(0, 16) + "…"
+                                    font.pixelSize: 10
+                                    font.family: "monospace"
+                                    color: root.successGreen
+                                }
+
+                                // Copy URL button (confirmed)
+                                Rectangle {
+                                    visible: logDel.inscDone
+                                    height: 18
+                                    implicitWidth: kCopyLbl.implicitWidth + 14
+                                    radius: 3
+                                    color: kCopyArea.pressed      ? "#CC4000"
+                                         : kCopyArea.containsMouse ? "#FF6B1A" : root.bgSecondary
+                                    border.color: root.borderColor; border.width: 1
+
+                                    Text {
+                                        id: kCopyLbl
+                                        anchors.centerIn: parent
+                                        text: "copy URL"
+                                        font.pixelSize: 9
+                                        color: root.textPrimary
                                     }
+
+                                    MouseArea {
+                                        id: kCopyArea
+                                        anchors.fill: parent
+                                        hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            clipboard.text = entryExplorerUrl
+                                            clipboard.forceActiveFocus()
+                                            clipboard.selectAll()
+                                            clipboard.copy()
+                                        }
+                                    }
+                                }
+
+                                // In-flight: progress bar
+                                Rectangle {
+                                    visible: logDel.inscInFlight
+                                    Layout.fillWidth: true
+                                    height: 4; radius: 2
+                                    color: "#262626"
+
+                                    Rectangle {
+                                        width: parent.width * logDel.inscProgress
+                                        height: parent.height; radius: parent.radius
+                                        color: root.accentOrange
+                                        Behavior on width { NumberAnimation { duration: 600 } }
+                                    }
+                                }
+
+                                // Time estimate
+                                Text {
+                                    visible: logDel.inscInFlight && logDel.inscTimeEst.length > 0
+                                    text: logDel.inscTimeEst
+                                    font.pixelSize: 10
+                                    color: root.textMuted
+                                }
+
+                                // Status label when no slot info yet
+                                Text {
+                                    visible: logDel.inscInFlight && entrySlotFrom <= 0
+                                    text: {
+                                        if (entryInscriptionStatus === "finalizing") return "finalizing…"
+                                        if (entryInscriptionStatus === "submitted")  return "submitted…"
+                                        return "queued…"
+                                    }
+                                    font.pixelSize: 10
+                                    color: root.textMuted
                                 }
                             }
                         }

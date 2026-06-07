@@ -1,52 +1,43 @@
 #pragma once
 
-#include <QHttpServer>
-#include <QHttpServerRequest>
-#include <QHttpServerResponse>
 #include <QObject>
 #include <QTcpServer>
+#include <QTcpSocket>
+#include <QByteArray>
 
 class KeeperPlugin;
 
 /**
- * KeeperHttpBridge — localhost HTTP API for the Basecamp Keeper Chrome extension.
+ * KeeperHttpBridge — localhost HTTP/1.1 API for the Keeper Chrome extension.
  *
- * Listens on http://127.0.0.1:7355 (default port).
+ * Listens on http://127.0.0.1:7355 (default).
+ * Implemented with plain QTcpServer/QTcpSocket — no Qt6HttpServer dependency.
  *
  * Routes:
  *   POST /preserve       body: {"url":"..."}  → {"queued":true,"id":"..."}
  *   GET  /queue                               → JSON array of queue items
  *   GET  /status/:id                          → {"status":"...","cid":"..."}
  *   OPTIONS *            CORS preflight       → 204 No Content + CORS headers
- *
- * All responses include Access-Control-Allow-Origin: * so the content script
- * can call the API from the archive.org page context.
- *
- * Threading: QHttpServer invokes synchronous route handlers on the thread that
- * owns it (main thread). KeeperPlugin lives on the same thread → direct calls
- * are safe; no extra locking needed.
  */
 class KeeperHttpBridge : public QObject
 {
     Q_OBJECT
 public:
     explicit KeeperHttpBridge(KeeperPlugin* plugin, QObject* parent = nullptr);
-
-    // Start listening. Returns true on success.
     bool listen(quint16 port = 7355);
 
-private:
-    QHttpServerResponse handlePreserve(const QHttpServerRequest& req);
-    QHttpServerResponse handleQueue();
-    QHttpServerResponse handleStatus(const QString& identifier);
+private slots:
+    void onNewConnection();
+    void onReadyRead();
 
-    static QHttpServerResponse jsonOk(const QByteArray& body);
-    static QHttpServerResponse jsonErr(const QByteArray& body,
-                                       QHttpServerResponse::StatusCode code
-                                           = QHttpServerResponse::StatusCode::BadRequest);
-    static QHttpServerResponse corsPreflight();
-    static void addCors(QHttpServerResponse& resp);
+private:
+    void handleRequest(QTcpSocket* socket, const QByteArray& raw);
+    void sendResponse(QTcpSocket* socket, int status,
+                      const QByteArray& contentType, const QByteArray& body);
+    void sendJson(QTcpSocket* socket, int status, const QByteArray& json);
+
+    static QByteArray statusText(int code);
 
     KeeperPlugin* plugin_;
-    QHttpServer   server_;
+    QTcpServer    server_;
 };

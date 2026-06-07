@@ -56,6 +56,8 @@ public:
     Q_INVOKABLE QString getBridgeStatus() const;
     Q_INVOKABLE QString getInscriptionQueue() const;
     Q_INVOKABLE QString markInscribed(const QString& cid);
+    Q_INVOKABLE QString getPendingUpload() const;
+    Q_INVOKABLE QString onUploadResult(const QString& identifier, const QString& fileName, const QString& cid);
 
 signals:
     void eventResponse(const QString& name, const QVariantList& data);
@@ -67,11 +69,8 @@ private:
     void    processNextFile();
     void    downloadFile(const QString& identifier, const KeeperFile& file);
     void    uploadToStash(const QString& identifier, const QString& localPath, const QString& fileName);
-    void    pollForFileCid(const QString& identifier, const QString& fileName,
-                           const QString& tmpPath, int attempts);
     void    finishItem(const QString& identifier, const QString& collectionCid);
     void    inscribeToBeacon(const QString& identifier, const QString& cid);
-    void    pollForTxHash(const QString& identifier, const QString& cid, int attempts);
     void    advanceQueue();
 
     // Persistence
@@ -85,8 +84,13 @@ private:
     void emitEvent(const QString& name, const QVariantList& data);
     QString itemsToJson(const QList<KeeperItem>& items);
 
-    LogosAPIClient*  stashClient_   = nullptr;
-    LogosAPIClient*  beaconClient_  = nullptr;
+    // Pending upload handed off to QML (sequential — one at a time)
+    struct PendingUpload {
+        QString identifier;
+        QString fileName;
+        QString localPath;
+        bool    active = false;
+    } pendingUpload_;
 
     QList<KeeperItem>  queue_;
     QList<QJsonObject> log_;

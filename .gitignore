@@ -3,3 +3,4 @@ result-*
 build/
 *.o
 *.a
+squashfs-root/
