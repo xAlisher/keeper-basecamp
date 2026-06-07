@@ -32,9 +32,9 @@ void KeeperPlugin::initLogos(LogosAPI* api)
 
     loadQueue();
 
-    // HTTP bridge disabled — Qt6HttpServer not in AppImage → dual-Qt heap corruption
-    // httpBridge_ = new KeeperHttpBridge(this, this);
-    // bridgeRunning_ = httpBridge_->listen(7355);
+    // HTTP bridge — plain QTcpServer, no Qt6HttpServer dependency
+    httpBridge_    = new KeeperHttpBridge(this, this);
+    bridgeRunning_ = httpBridge_->listen(7355);
 
     // Defer queue resume so the event loop is running.
     // getClient() must NOT be called here — crashes if target module not yet loaded.
