@@ -23,6 +23,11 @@ Item {
     property int    bridgePort:     7355
     property int    currentLibSlot: 0
 
+    // Upload handoff: QML drives stash IPC (getClient is broken in C++)
+    property var    pendingUpload:  null   // {id, file, path} while uploading
+    property int    uploadAttempts: 0
+    property var    beaconLogMap:   ({})   // cid → {txHash, slotFrom, libAtSubmit, status}
+
     // ── Helpers ───────────────────────────────────────────────────────────
 
     function callModuleParse(raw) {
@@ -112,6 +117,33 @@ Item {
             }
         }
 
+        // Beacon log — build cid → inscription info map for keeper log display
+        var bLogRaw = callModuleParse(logos.callModule("logos_beacon", "getInscriptionLog", []))
+        var bMap = {}
+        if (Array.isArray(bLogRaw)) {
+            for (var bi = 0; bi < bLogRaw.length; bi++) {
+                var be = bLogRaw[bi]
+                if (be.cid) bMap[be.cid] = {
+                    txHash:     be.inscriptionId || "",
+                    slotFrom:   be.slotFrom      || 0,
+                    libAtSubmit: be.libAtSubmit  || 0,
+                    status:     be.status        || ""
+                }
+            }
+        }
+        root.beaconLogMap = bMap
+
+        // Stash upload handoff: check for a pending upload from C++
+        if (!root.pendingUpload) {
+            var puRaw = callModuleParse(logos.callModule("keeper", "getPendingUpload", []))
+            if (puRaw && puRaw.path) {
+                root.pendingUpload  = puRaw
+                root.uploadAttempts = 0
+                logos.callModule("stash", "upload", [puRaw.path, "keeper"])
+                stashPollTimer.start()
+            }
+        }
+
         // Log — full rebuild each poll so txHash updates are picked up
         var lRaw = callModuleParse(logos.callModule("keeper", "getLog", []))
         if (Array.isArray(lRaw)) {
@@ -125,20 +157,22 @@ Item {
                         if (c) cidList.push(fmtCid(c))
                     }
                 }
-                var txHash = entry.txHash || ""
+                var collCid = entry.collectionCid || ""
+                var bEntry  = collCid ? (root.beaconLogMap[collCid] || {}) : {}
+                var txHash  = bEntry.txHash || ""
                 logModel.append({
                     entryTs:    entry.ts    || 0,
                     entryTitle: entry.title || entry.id || "",
                     entryCids:  cidList.join(", "),
                     entrySize:  fmtSize(entry.totalSize || 0),
-                    entryCollectionCid: entry.collectionCid || "",
+                    entryCollectionCid: collCid,
                     entryTxHash: txHash,
                     entryExplorerUrl: txHash
                         ? "https://testnet.blockchain.logos.co/web/explorer/transactions/" + txHash
                         : "",
-                    entryInscriptionStatus: entry.inscriptionStatus || (txHash ? "confirmed" : (entry.collectionCid ? "submitted" : "")),
-                    entrySlotFrom:    entry.slotFrom    || 0,
-                    entryLibAtSubmit: entry.libAtSubmit || 0
+                    entryInscriptionStatus: bEntry.status || (txHash ? "confirmed" : (collCid ? "submitted" : "")),
+                    entrySlotFrom:    bEntry.slotFrom    || 0,
+                    entryLibAtSubmit: bEntry.libAtSubmit || 0
                 })
             }
         }
@@ -153,6 +187,38 @@ Item {
         running: true
         repeat: true
         onTriggered: root.refresh()
+    }
+
+    // Polls stash getLatestLogosResult after triggering an upload
+    Timer {
+        id: stashPollTimer
+        interval: 2000
+        running: false
+        repeat: true
+        onTriggered: {
+            if (!root.pendingUpload) { stop(); return }
+            root.uploadAttempts++
+            if (root.uploadAttempts > 60) {
+                // Timeout after 120s — advance without CID
+                var pu = root.pendingUpload
+                root.pendingUpload = null
+                stop()
+                logos.callModule("keeper", "onUploadResult", [pu.id, pu.file, ""])
+                return
+            }
+            var latestRaw = logos.callModule("stash", "getLatestLogosResult", [])
+            var latest = root.callModuleParse(latestRaw)
+            if (latest && latest.cid && latest.file) {
+                var latestBase = latest.file.split("/").pop().split("\\").pop()
+                var pendingBase = root.pendingUpload.path.split("/").pop().split("\\").pop()
+                if (latestBase === pendingBase) {
+                    var pu2 = root.pendingUpload
+                    root.pendingUpload = null
+                    stop()
+                    logos.callModule("keeper", "onUploadResult", [pu2.id, pu2.file, latest.cid])
+                }
+            }
+        }
     }
 
     Component.onCompleted: root.refresh()

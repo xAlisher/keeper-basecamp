@@ -10,23 +10,9 @@
 #include <QNetworkRequest>
 #include <QUrl>
 #include <cstdio>
-#include <new>
 
 #define KTRACE(msg) do { fprintf(stderr, "[keeper-trace] " msg "\n"); fflush(stderr); } while(0)
 #define KTRACEF(fmt, ...) do { fprintf(stderr, "[keeper-trace] " fmt "\n", ##__VA_ARGS__); fflush(stderr); } while(0)
-
-// Safe wrapper: getClient() throws std::bad_alloc when the target module isn't loaded yet.
-// Catch and return nullptr so callers can retry via timer.
-static LogosAPIClient* safeGetClient(LogosAPI* api, const char* module)
-{
-    try {
-        return api->getClient(module);
-    } catch (std::bad_alloc&) {
-        fprintf(stderr, "[keeper-trace] getClient(%s) threw bad_alloc — module not yet loaded\n", module);
-        fflush(stderr);
-        return nullptr;
-    }
-}
 
 
 // ── Lifecycle ────────────────────────────────────────────────────────────────
@@ -54,14 +40,8 @@ void KeeperPlugin::initLogos(LogosAPI* api)
     httpBridge_    = new KeeperHttpBridge(this, this);
     bridgeRunning_ = httpBridge_->listen(7355);
 
-    // Pre-init IPC clients before any network activity.
-    // getClient() → new QRemoteObjectNode() throws std::bad_alloc when:
-    //   (a) the target module isn't loaded yet, OR
-    //   (b) Qt's QRO allocator state is degraded (after emitEvent/downloadProgress).
-    // Each failed construction degrades state further — call getClient MINIMALLY.
-    // Strategy: try at t=20s and t=45s only. Stash typically loads within 12-18s.
-    QTimer::singleShot(20000, this, [this]{ tryInitClients(0); });
-    QTimer::singleShot(45000, this, [this]{ tryInitClients(1); });
+    // IPC with stash and beacon is handled via QML callModule (keeper QML polls
+    // getPendingUpload() and calls back onUploadResult). No getClient() calls needed.
     qDebug() << "KeeperPlugin: initialized";
 }
 
@@ -211,31 +191,6 @@ QString KeeperPlugin::setConfig(const QString& json)
     if (obj.contains("maxFilesPerItem"))  maxFilesPerItem_  = obj["maxFilesPerItem"].toInt(maxFilesPerItem_);
     if (obj.contains("skipDerivatives"))  skipDerivatives_  = obj["skipDerivatives"].toBool(skipDerivatives_);
     return R"({"success":true})";
-}
-
-// ── IPC client init ──────────────────────────────────────────────────────────
-
-void KeeperPlugin::tryInitClients(int attempt)
-{
-    if (!logosAPI) return;
-
-    // Only init what's still missing.
-    if (!stashClient_)
-        stashClient_  = safeGetClient(logosAPI, "stash");
-    if (!beaconClient_)
-        beaconClient_ = safeGetClient(logosAPI, "logos_beacon");
-
-    KTRACEF("tryInitClients attempt=%d stash=%s beacon=%s",
-            attempt,
-            stashClient_  ? "ok" : "not ready",
-            beaconClient_ ? "ok" : "not ready");
-
-    // On success: advanceQueue starts processing.
-    // On failure: we already scheduled a second attempt at t=45s (attempt=1).
-    // No further retries — repeated failed new QRemoteObjectNode() degrades Qt state.
-    if (stashClient_ && beaconClient_) {
-        advanceQueue();
-    }
 }
 
 // ── Queue engine ─────────────────────────────────────────────────────────────
@@ -445,98 +400,55 @@ void KeeperPlugin::downloadFile(const QString& identifier, const KeeperFile& fil
 void KeeperPlugin::uploadToStash(const QString& identifier, const QString& localPath,
                                   const QString& fileName)
 {
-    KTRACEF("uploadToStash %s %s", qPrintable(identifier), qPrintable(fileName));
-    // NOTE: do NOT delete localPath here — stash defers the upload via QTimer::singleShot(0).
-    // Deleting the file before stash's deferred upload runs causes "file does not exist".
-    // Files in /tmp are cleaned up by the OS; we also clean them in finishItem.
-
-    // stashClient_ is pre-initialised in initLogos; this guard is a safety net only.
-    KTRACEF("uploadToStash - stashClient_=%p", (void*)stashClient_);
+    KTRACEF("uploadToStash %s %s — handing off to QML", qPrintable(identifier), qPrintable(fileName));
 
     KeeperItem* item = nullptr;
-    for (auto& i : queue_)
-        if (i.identifier == identifier) { item = &i; break; }
+    for (auto& i : queue_) if (i.identifier == identifier) { item = &i; break; }
     if (!item) return;
 
-    KeeperFile* kf = nullptr;
     for (auto& ff : item->files)
-        if (ff.name == fileName) { kf = &ff; break; }
+        if (ff.name == fileName) { ff.status = "uploading"; break; }
 
-    if (stashClient_) {
-        KTRACEF("calling stash::upload for %s", qPrintable(localPath));
-        stashClient_->invokeRemoteMethod("stash", "upload", localPath, "keeper");
-        KTRACE("stash::upload returned");
-        // Upload is async — poll getLatestLogosResult until we see this file's CID.
-        if (kf) kf->status = "uploading";
-        QString id2   = identifier;
-        QString name2 = fileName;
-        QString path2 = localPath;
-        QTimer::singleShot(2000, this, [this, id2, name2, path2]() {
-            pollForFileCid(id2, name2, path2, 300);
-        });
-    } else {
-        // stashClient_ not yet ready — retry in 5s.
-        // DO NOT call getClient() here: that degrades Qt QRO state.
-        // tryInitClients() will set stashClient_; this loop just waits.
-        qDebug() << "KeeperPlugin: stashClient_ not ready, retrying upload in 5s for" << fileName;
-        QString id2 = identifier, path2 = localPath, name2 = fileName;
-        QTimer::singleShot(5000, this, [this, id2, path2, name2]() {
-            uploadToStash(id2, path2, name2);
-        });
-    }
+    // Store for QML to pick up via getPendingUpload().
+    // QML calls callModule("stash", "upload", ...) then reports back via onUploadResult().
+    pendingUpload_ = {identifier, fileName, localPath, true};
+    saveQueue();
 }
 
-void KeeperPlugin::pollForFileCid(const QString& identifier, const QString& fileName,
-                                   const QString& tmpPath, int attempts)
+QString KeeperPlugin::getPendingUpload() const
 {
-    // stashClient_ set by tryInitClients() before queue processing starts
+    if (!pendingUpload_.active) return QStringLiteral("{}");
+    QJsonObject o;
+    o[QStringLiteral("id")]   = pendingUpload_.identifier;
+    o[QStringLiteral("file")] = pendingUpload_.fileName;
+    o[QStringLiteral("path")] = pendingUpload_.localPath;
+    return QJsonDocument(o).toJson(QJsonDocument::Compact);
+}
 
-    if (stashClient_) {
-        QString latestJson = stashClient_->invokeRemoteMethod("stash", "getLatestLogosResult").toString();
-        QJsonObject latest = QJsonDocument::fromJson(latestJson.toUtf8()).object();
-        QString latestFile = QFileInfo(latest.value("file").toString()).fileName();
-        QString latestCid  = latest.value("cid").toString();
+QString KeeperPlugin::onUploadResult(const QString& identifier, const QString& fileName,
+                                      const QString& cid)
+{
+    KTRACEF("onUploadResult %s %s cid=%s",
+            qPrintable(identifier), qPrintable(fileName), qPrintable(cid));
 
-        if (latestFile == QFileInfo(tmpPath).fileName() && !latestCid.isEmpty()) {
-            KeeperItem* item = nullptr;
-            for (auto& i : queue_)
-                if (i.identifier == identifier) { item = &i; break; }
-            if (item) {
-                for (auto& ff : item->files) {
-                    if (ff.name == fileName) {
-                        ff.cid    = latestCid;
-                        ff.status = "done";
-                        break;
-                    }
-                }
-                saveQueue();
-                item->currentFile++;
-            }
-            QFile::remove(tmpPath);
-            processNextFile();
-            return;
+    pendingUpload_.active = false;
+
+    KeeperItem* item = nullptr;
+    for (auto& i : queue_) if (i.identifier == identifier) { item = &i; break; }
+    if (!item) return R"({"ok":false,"error":"item not found"})";
+
+    for (auto& ff : item->files) {
+        if (ff.name == fileName) {
+            ff.cid    = cid;
+            ff.status = "done";
+            break;
         }
     }
-
-    if (attempts <= 0) {
-        // Give up on this file's CID — mark done without CID and advance
-        KeeperItem* item = nullptr;
-        for (auto& i : queue_)
-            if (i.identifier == identifier) { item = &i; break; }
-        if (item) {
-            for (auto& ff : item->files) {
-                if (ff.name == fileName) { ff.status = "done"; break; }
-            }
-            item->currentFile++;
-        }
-        QFile::remove(tmpPath);
-        processNextFile();
-        return;
-    }
-
-    QTimer::singleShot(2000, this, [this, identifier, fileName, tmpPath, attempts]() {
-        pollForFileCid(identifier, fileName, tmpPath, attempts - 1);
-    });
+    QFile::remove(pendingUpload_.localPath);
+    saveQueue();
+    item->currentFile++;
+    processNextFile();
+    return R"({"ok":true})";
 }
 
 void KeeperPlugin::inscribeToBeacon(const QString& identifier, const QString& cid)
@@ -575,67 +487,7 @@ void KeeperPlugin::inscribeToBeacon(const QString& identifier, const QString& ci
 
     emitEvent("itemPreserved", {QVariantMap{{"id", identifier}, {"cid", cid}}});
     finishItem(identifier, cid);
-
-    // Poll beacon for the tx hash (inscriptionId) once the inscription confirms.
-    // pinCid queues async — the tx hash is set later by confirmInscription.
-    if (beaconClient_ && !cid.isEmpty()) {
-        QString cidCopy = cid;
-        QString idCopy  = identifier;
-        QTimer::singleShot(5000, this, [this, idCopy, cidCopy]() {
-            pollForTxHash(idCopy, cidCopy, 120); // up to 120 × 5s = 10 min
-        });
-    }
-}
-
-void KeeperPlugin::pollForTxHash(const QString& identifier, const QString& cid, int attempts)
-{
-    if (!beaconClient_) return;
-
-    QString logJson = beaconClient_->invokeRemoteMethod("logos_beacon", "getInscriptionLog").toString();
-    QJsonArray entries = QJsonDocument::fromJson(logJson.toUtf8()).array();
-
-    for (const auto& v : entries) {
-        QJsonObject e = v.toObject();
-        if (e["cid"].toString() != cid) continue;
-
-        QString txHash          = e[QStringLiteral("inscriptionId")].toString();
-        QString inscriptionStatus = e[QStringLiteral("status")].toString();
-        int slotFrom            = e[QStringLiteral("slotFrom")].toInt(0);
-        int libAtSubmit         = e[QStringLiteral("libAtSubmit")].toInt(0);
-
-        // Update keeper log entry with current beacon status on every poll
-        bool changed = false;
-        for (auto& obj : log_) {
-            if (obj[QStringLiteral("id")].toString() != identifier) continue;
-            if (!txHash.isEmpty())          { obj[QStringLiteral("txHash")]           = txHash;           changed = true; }
-            if (!inscriptionStatus.isEmpty()){ obj[QStringLiteral("inscriptionStatus")]= inscriptionStatus; changed = true; }
-            if (slotFrom > 0)               { obj[QStringLiteral("slotFrom")]         = slotFrom;          changed = true; }
-            if (libAtSubmit > 0)            { obj[QStringLiteral("libAtSubmit")]       = libAtSubmit;       changed = true; }
-            break;
-        }
-        if (changed) {
-            QJsonArray arr;
-            for (const auto& o : log_) arr.append(o);
-            QFile f(persistPath("keeper-log.json"));
-            if (f.open(QIODevice::WriteOnly))
-                f.write(QJsonDocument(arr).toJson(QJsonDocument::Compact));
-            emitEvent("logUpdated", {QVariantMap{
-                {QStringLiteral("id"),     identifier},
-                {QStringLiteral("status"), inscriptionStatus},
-                {QStringLiteral("txHash"), txHash}
-            }});
-        }
-
-        if (!txHash.isEmpty()) return;  // confirmed — stop polling
-        break;                          // found entry, not confirmed yet — keep polling
-    }
-
-    // Poll for up to 120 × 5s = 10 min (covers the ~8-min finalization window)
-    if (attempts > 0) {
-        QTimer::singleShot(5000, this, [this, identifier, cid, attempts]() {
-            pollForTxHash(identifier, cid, attempts - 1);
-        });
-    }
+    // txHash tracking is handled by keeper QML reading beacon's getInscriptionLog().
 }
 
 void KeeperPlugin::finishItem(const QString& identifier, const QString& collectionCid)
