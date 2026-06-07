@@ -10,9 +10,23 @@
 #include <QNetworkRequest>
 #include <QUrl>
 #include <cstdio>
+#include <new>
 
 #define KTRACE(msg) do { fprintf(stderr, "[keeper-trace] " msg "\n"); fflush(stderr); } while(0)
 #define KTRACEF(fmt, ...) do { fprintf(stderr, "[keeper-trace] " fmt "\n", ##__VA_ARGS__); fflush(stderr); } while(0)
+
+// Safe wrapper: getClient() throws std::bad_alloc when the target module isn't loaded yet.
+// Catch and return nullptr so callers can retry via timer.
+static LogosAPIClient* safeGetClient(LogosAPI* api, const char* module)
+{
+    try {
+        return api->getClient(module);
+    } catch (std::bad_alloc&) {
+        fprintf(stderr, "[keeper-trace] getClient(%s) threw bad_alloc — module not yet loaded\n", module);
+        fflush(stderr);
+        return nullptr;
+    }
+}
 
 
 // ── Lifecycle ────────────────────────────────────────────────────────────────
@@ -412,9 +426,9 @@ void KeeperPlugin::uploadToStash(const QString& identifier, const QString& local
     // stashClient_ is pre-initialised in initLogos; this guard is a safety net only.
     KTRACEF("uploadToStash - stashClient_=%p logosAPI=%p", (void*)stashClient_, (void*)logosAPI);
     if (!stashClient_ && logosAPI) {
-        KTRACE("calling logosAPI->getClient(stash)");
-        stashClient_ = logosAPI->getClient("stash");
-        KTRACEF("getClient(stash) returned %p", (void*)stashClient_);
+        KTRACE("calling safeGetClient(stash)");
+        stashClient_ = safeGetClient(logosAPI, "stash");
+        KTRACEF("safeGetClient(stash) returned %p", (void*)stashClient_);
     }
 
     KeeperItem* item = nullptr;
@@ -454,7 +468,7 @@ void KeeperPlugin::pollForFileCid(const QString& identifier, const QString& file
                                    const QString& tmpPath, int attempts)
 {
     if (!stashClient_ && logosAPI)
-        stashClient_ = logosAPI->getClient("stash");
+        stashClient_ = safeGetClient(logosAPI, "stash");
 
     if (stashClient_) {
         QString latestJson = stashClient_->invokeRemoteMethod("stash", "getLatestLogosResult").toString();
@@ -543,7 +557,7 @@ void KeeperPlugin::inscribeToBeacon(const QString& identifier, const QString& ci
 
     // Poll beacon for the tx hash (inscriptionId) once the inscription confirms.
     // pinCid queues async — the tx hash is set later by confirmInscription.
-    if (!beaconClient_ && logosAPI) beaconClient_ = logosAPI->getClient("logos_beacon");
+    if (!beaconClient_ && logosAPI) beaconClient_ = safeGetClient(logosAPI, "logos_beacon");
     if (beaconClient_ && !cid.isEmpty()) {
         QString cidCopy = cid;
         QString idCopy  = identifier;
@@ -555,7 +569,7 @@ void KeeperPlugin::inscribeToBeacon(const QString& identifier, const QString& ci
 
 void KeeperPlugin::pollForTxHash(const QString& identifier, const QString& cid, int attempts)
 {
-    if (!beaconClient_ && logosAPI) beaconClient_ = logosAPI->getClient("logos_beacon");
+    if (!beaconClient_ && logosAPI) beaconClient_ = safeGetClient(logosAPI, "logos_beacon");
     if (!beaconClient_) return;
 
     QString logJson = beaconClient_->invokeRemoteMethod("logos_beacon", "getInscriptionLog").toString();
