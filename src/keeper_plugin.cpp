@@ -9,6 +9,10 @@
 #include <QStandardPaths>
 #include <QNetworkRequest>
 #include <QUrl>
+#include <cstdio>
+
+#define KTRACE(msg) do { fprintf(stderr, "[keeper-trace] " msg "\n"); fflush(stderr); } while(0)
+#define KTRACEF(fmt, ...) do { fprintf(stderr, "[keeper-trace] " fmt "\n", ##__VA_ARGS__); fflush(stderr); } while(0)
 
 
 // ── Lifecycle ────────────────────────────────────────────────────────────────
@@ -49,12 +53,12 @@ void KeeperPlugin::initLogos(LogosAPI* api)
 
 QString KeeperPlugin::preserveItem(const QString& urlOrId)
 {
-    qDebug() << "KeeperPlugin: preserveItem called with" << urlOrId;
+    KTRACE("preserveItem called");
     QString id = parseIdentifier(urlOrId);
     if (id.isEmpty())
         return R"({"success":false,"error":"could not parse identifier"})";
 
-    qDebug() << "KeeperPlugin: parsed id =" << id;
+    KTRACEF("parsed id = %s", qPrintable(id));
 
     // Deduplicate
     for (const auto& item : queue_)
@@ -66,15 +70,15 @@ QString KeeperPlugin::preserveItem(const QString& urlOrId)
     item.title      = id;
     item.status     = "queued";
     queue_.append(item);
-    qDebug() << "KeeperPlugin: appended to queue, saving...";
+    KTRACE("appended to queue, saving...");
     saveQueue();
-    qDebug() << "KeeperPlugin: saveQueue done, emitting event...";
+    KTRACE("saveQueue done, emitting event...");
 
     emitEvent("itemQueued", {QVariantMap{{"id", id}, {"title", id}}});
     qDebug() << "KeeperPlugin: queued" << id;
 
     if (!busy_) advanceQueue();
-    qDebug() << "KeeperPlugin: preserveItem returning";
+    KTRACE("preserveItem returning");
     return QString(R"({"queued":true,"id":"%1"})").arg(id);
 }
 
@@ -212,16 +216,16 @@ void KeeperPlugin::advanceQueue()
 
 void KeeperPlugin::fetchMetadata(const QString& identifier)
 {
-    qDebug() << "KeeperPlugin: fetchMetadata for" << identifier;
+    KTRACEF("fetchMetadata for %s", qPrintable(identifier));
     QString url = QString("https://archive.org/metadata/%1").arg(identifier);
     QNetworkRequest req{QUrl(url)};
     req.setRawHeader("User-Agent", "keeper-basecamp/0.1");
-    qDebug() << "KeeperPlugin: calling nam_->get() for metadata";
+    KTRACE("calling nam_->get() for metadata");
     auto* reply = nam_->get(req);
-    qDebug() << "KeeperPlugin: nam_->get() returned reply=" << reply;
+    KTRACEF("nam_->get() returned reply=%p", (void*)reply);
 
     connect(reply, &QNetworkReply::finished, this, [this, reply, identifier] {
-        qDebug() << "KeeperPlugin: fetchMetadata reply finished for" << identifier;
+        KTRACEF("fetchMetadata reply finished for %s", qPrintable(identifier));
         KeeperItem* item = nullptr;
         for (auto& i : queue_)
             if (i.identifier == identifier) { item = &i; break; }
@@ -291,6 +295,7 @@ void KeeperPlugin::fetchMetadata(const QString& identifier)
 
 void KeeperPlugin::processNextFile()
 {
+    KTRACE("processNextFile called");
     KeeperItem* item = nullptr;
     for (auto& i : queue_)
         if (i.status == "active") { item = &i; break; }
@@ -324,6 +329,7 @@ void KeeperPlugin::processNextFile()
 
 void KeeperPlugin::downloadFile(const QString& identifier, const KeeperFile& file)
 {
+    KTRACEF("downloadFile %s/%s", qPrintable(identifier), qPrintable(file.name));
     QString url = QString("https://archive.org/download/%1/%2")
                       .arg(identifier, file.name);
     QNetworkRequest req{QUrl(url)};
@@ -398,17 +404,17 @@ void KeeperPlugin::downloadFile(const QString& identifier, const KeeperFile& fil
 void KeeperPlugin::uploadToStash(const QString& identifier, const QString& localPath,
                                   const QString& fileName)
 {
-    qDebug() << "KeeperPlugin: uploadToStash" << identifier << fileName;
+    KTRACEF("uploadToStash %s %s", qPrintable(identifier), qPrintable(fileName));
     // NOTE: do NOT delete localPath here — stash defers the upload via QTimer::singleShot(0).
     // Deleting the file before stash's deferred upload runs causes "file does not exist".
     // Files in /tmp are cleaned up by the OS; we also clean them in finishItem.
 
     // stashClient_ is pre-initialised in initLogos; this guard is a safety net only.
-    qDebug() << "KeeperPlugin: uploadToStash - stashClient_=" << stashClient_ << "logosAPI=" << logosAPI;
+    KTRACEF("uploadToStash - stashClient_=%p logosAPI=%p", (void*)stashClient_, (void*)logosAPI);
     if (!stashClient_ && logosAPI) {
-        qDebug() << "KeeperPlugin: calling logosAPI->getClient(stash)";
+        KTRACE("calling logosAPI->getClient(stash)");
         stashClient_ = logosAPI->getClient("stash");
-        qDebug() << "KeeperPlugin: getClient(stash) returned" << stashClient_;
+        KTRACEF("getClient(stash) returned %p", (void*)stashClient_);
     }
 
     KeeperItem* item = nullptr;
@@ -421,9 +427,9 @@ void KeeperPlugin::uploadToStash(const QString& identifier, const QString& local
         if (ff.name == fileName) { kf = &ff; break; }
 
     if (stashClient_) {
-        qDebug() << "KeeperPlugin: calling stash::upload for" << localPath;
+        KTRACEF("calling stash::upload for %s", qPrintable(localPath));
         stashClient_->invokeRemoteMethod("stash", "upload", localPath, "keeper");
-        qDebug() << "KeeperPlugin: stash::upload returned";
+        KTRACE("stash::upload returned");
         // Upload is async — poll getLatestLogosResult until we see this file's CID.
         if (kf) kf->status = "uploading";
         QString id2   = identifier;
