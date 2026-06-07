@@ -55,11 +55,13 @@ void KeeperPlugin::initLogos(LogosAPI* api)
     bridgeRunning_ = httpBridge_->listen(7355);
 
     // Pre-init IPC clients before any network activity.
-    // getClient() throws std::bad_alloc when the target module isn't loaded, AND
-    // after any emitEvent/downloadProgress calls (degraded QRO allocator state).
-    // Must be called BEFORE advanceQueue() triggers any network/download activity.
-    // Retry every 5s until both clients are ready, then start queue processing.
-    QTimer::singleShot(2000, this, [this]{ tryInitClients(0); });
+    // getClient() → new QRemoteObjectNode() throws std::bad_alloc when:
+    //   (a) the target module isn't loaded yet, OR
+    //   (b) Qt's QRO allocator state is degraded (after emitEvent/downloadProgress).
+    // Each failed construction degrades state further — call getClient MINIMALLY.
+    // Strategy: try at t=20s and t=45s only. Stash typically loads within 12-18s.
+    QTimer::singleShot(20000, this, [this]{ tryInitClients(0); });
+    QTimer::singleShot(45000, this, [this]{ tryInitClients(1); });
     qDebug() << "KeeperPlugin: initialized";
 }
 
@@ -217,29 +219,23 @@ void KeeperPlugin::tryInitClients(int attempt)
 {
     if (!logosAPI) return;
 
+    // Only init what's still missing.
     if (!stashClient_)
         stashClient_  = safeGetClient(logosAPI, "stash");
     if (!beaconClient_)
         beaconClient_ = safeGetClient(logosAPI, "logos_beacon");
 
-    const bool stashOk  = stashClient_  != nullptr;
-    const bool beaconOk = beaconClient_ != nullptr;
-
     KTRACEF("tryInitClients attempt=%d stash=%s beacon=%s",
-            attempt, stashOk ? "ok" : "not ready", beaconOk ? "ok" : "not ready");
+            attempt,
+            stashClient_  ? "ok" : "not ready",
+            beaconClient_ ? "ok" : "not ready");
 
-    if (!stashOk || !beaconOk) {
-        // Retry every 5 s for up to 120 s (24 attempts), then give up.
-        if (attempt < 24) {
-            QTimer::singleShot(5000, this, [this, attempt]{ tryInitClients(attempt + 1); });
-        } else {
-            qWarning() << "KeeperPlugin: stash/beacon not available after 120s — queue disabled";
-        }
-        return;
+    // On success: advanceQueue starts processing.
+    // On failure: we already scheduled a second attempt at t=45s (attempt=1).
+    // No further retries — repeated failed new QRemoteObjectNode() degrades Qt state.
+    if (stashClient_ && beaconClient_) {
+        advanceQueue();
     }
-
-    // Both ready — start queue processing.
-    advanceQueue();
 }
 
 // ── Queue engine ─────────────────────────────────────────────────────────────
@@ -479,14 +475,14 @@ void KeeperPlugin::uploadToStash(const QString& identifier, const QString& local
             pollForFileCid(id2, name2, path2, 300);
         });
     } else {
-        // stashClient_ must be set by tryInitClients() before advanceQueue() runs.
-        // This branch should be unreachable in normal operation.
-        qWarning() << "KeeperPlugin: stashClient_ null in uploadToStash — skipping" << fileName;
-        // Mark file failed and advance.
-        KeeperItem* it = nullptr;
-        for (auto& i : queue_) if (i.identifier == identifier) { it = &i; break; }
-        if (it) { it->currentFile++; }
-        processNextFile();
+        // stashClient_ not yet ready — retry in 5s.
+        // DO NOT call getClient() here: that degrades Qt QRO state.
+        // tryInitClients() will set stashClient_; this loop just waits.
+        qDebug() << "KeeperPlugin: stashClient_ not ready, retrying upload in 5s for" << fileName;
+        QString id2 = identifier, path2 = localPath, name2 = fileName;
+        QTimer::singleShot(5000, this, [this, id2, path2, name2]() {
+            uploadToStash(id2, path2, name2);
+        });
     }
 }
 
