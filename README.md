@@ -40,15 +40,15 @@ archive.org/details/<id>
 
 All dependencies must be installed and loaded in Logos Basecamp before Keeper operates end-to-end.
 
-| Module | Installed name | Repo | Role |
-|--------|---------------|------|------|
-| **keeper** (this) | `keeper` | [keeper-basecamp](https://github.com/xAlisher/keeper-basecamp) | orchestration, IA fetch, queue, HTTP bridge |
-| **keeper-ui** (this) | `keeper_ui` (plugin) | [keeper-basecamp](https://github.com/xAlisher/keeper-basecamp) | QML interface |
-| **stash** | `stash` | [stash-basecamp](https://github.com/xAlisher/stash-basecamp) | file upload → IPFS CID |
-| **beacon** | `logos_beacon` | [beacon-basecamp](https://github.com/xAlisher/beacon-basecamp) | CID → on-chain inscription via Zone Sequencer |
-| **zone sequencer** | `liblogos_zone_sequencer_module` | shipped with Basecamp AppImage | publishes to LEZ chain |
-| **cord** | `logos_cord` | [cord-basecamp](https://github.com/xAlisher/cord-basecamp) | channel subscription + discovery (optional for basic use) |
-| **keycard** | `logos_keycard` | [keycard-basecamp](https://github.com/xAlisher/keycard-basecamp) | Ed25519 signing key — required for key portability; Beacon falls back to a local key file if absent but that key can't be reproduced after reinstall |
+| Module | Installed name | Repo | Release |
+|--------|---------------|------|---------|
+| **keeper** (this) | `keeper` | [keeper-basecamp](https://github.com/xAlisher/keeper-basecamp) | [v0.1.0 LGX](https://github.com/xAlisher/keeper-basecamp/releases/tag/v0.1.0) |
+| **keeper-ui** (this) | `keeper_ui` (plugin) | [keeper-basecamp](https://github.com/xAlisher/keeper-basecamp) | [v0.1.0 LGX](https://github.com/xAlisher/keeper-basecamp/releases/tag/v0.1.0) |
+| **stash** | `stash` | [stash-basecamp](https://github.com/xAlisher/stash-basecamp) | [v0.1.0 LGX](https://github.com/xAlisher/stash-basecamp/releases/tag/v0.1.0) |
+| **beacon** | `logos_beacon` | [beacon-basecamp](https://github.com/xAlisher/beacon-basecamp) | [v1.0.0 LGX](https://github.com/xAlisher/beacon-basecamp/releases/tag/v1.0.0) |
+| **zone sequencer** | `liblogos_zone_sequencer_module` | shipped with Basecamp AppImage | — |
+| **cord** | `logos_cord` | [cord-basecamp](https://github.com/xAlisher/cord-basecamp) | [v1.0.0 LGX](https://github.com/xAlisher/cord-basecamp/releases/tag/v1.0.0) |
+| **keycard** | `logos_keycard` | [keycard-basecamp](https://github.com/xAlisher/keycard-basecamp) | [v1.0.0 LGX](https://github.com/xAlisher/keycard-basecamp/releases/tag/v1.0.0) |
 
 ### Runtime environment
 
@@ -57,19 +57,54 @@ All dependencies must be installed and loaded in Logos Basecamp before Keeper op
 
 ---
 
-## Build
+## Install
 
-Keeper uses [logos-module-builder](https://github.com/logos-co/logos-module-builder) via Nix flakes.
+### Option A — via LGX (recommended for testing)
 
-### Prerequisites
+Download the LGX files from each module's release page and install with `lgpm`. Install in this order (dependencies first):
 
 ```bash
-# Nix with flakes enabled
-nix --version          # >= 2.18 recommended
-# OR: NixOS with experimental-features = nix-command flakes
+# Find lgpm in the AppImage Nix store
+lgpm=$(find /nix/store -name lgpm -path "*/logos-package-manager-cli-*/bin/lgpm" 2>/dev/null | head -1)
+MDIR=~/.local/share/Logos/LogosBasecamp/modules
+PDIR=~/.local/share/Logos/LogosBasecamp/plugins
+
+# 1. Keycard — https://github.com/xAlisher/keycard-basecamp/releases/tag/v1.0.0
+rm -rf $MDIR/logos_keycard $PDIR/keycard_ui
+$lgpm --modules-dir $MDIR --ui-plugins-dir $PDIR --allow-unsigned install --file logos-keycard-module-lib-lgx-1.0.0.lgx
+$lgpm --modules-dir $MDIR --ui-plugins-dir $PDIR --allow-unsigned install --file logos-keycard-ui-module-lgx-1.0.0.lgx
+
+# 2. Stash — https://github.com/xAlisher/stash-basecamp/releases/tag/v0.1.0
+rm -rf $MDIR/stash $PDIR/stash_ui
+$lgpm --modules-dir $MDIR --ui-plugins-dir $PDIR --allow-unsigned install --file logos-stash-module-lib-lgx-0.1.0.lgx
+$lgpm --modules-dir $MDIR --ui-plugins-dir $PDIR --allow-unsigned install --file logos-stash_ui-module-lgx-0.1.0.lgx
+
+# 3. Beacon — https://github.com/xAlisher/beacon-basecamp/releases/tag/v1.0.0
+rm -rf $MDIR/logos_beacon $PDIR/beacon_ui
+$lgpm --modules-dir $MDIR --ui-plugins-dir $PDIR --allow-unsigned install --file logos-logos_beacon-module-lib-lgx-1.0.0.lgx
+$lgpm --modules-dir $MDIR --ui-plugins-dir $PDIR --allow-unsigned install --file logos-beacon_ui-module-lgx-1.0.0.lgx
+
+# 4. Cord — https://github.com/xAlisher/cord-basecamp/releases/tag/v1.0.0
+rm -rf $MDIR/logos_cord $PDIR/cord_ui
+$lgpm --modules-dir $MDIR --ui-plugins-dir $PDIR --allow-unsigned install --file logos-logos_cord-module-lib-lgx-1.0.0.lgx
+$lgpm --modules-dir $MDIR --ui-plugins-dir $PDIR --allow-unsigned install --file logos-cord_ui-module-lgx-1.0.0.lgx
+
+# 5. Keeper — https://github.com/xAlisher/keeper-basecamp/releases/tag/v0.1.0
+rm -rf $MDIR/keeper $PDIR/keeper_ui
+$lgpm --modules-dir $MDIR --ui-plugins-dir $PDIR --allow-unsigned install --file logos-keeper-module-lib-lgx-0.1.0.lgx
+$lgpm --modules-dir $MDIR --ui-plugins-dir $PDIR --allow-unsigned install --file logos-keeper_ui-module-lgx-0.1.0.lgx
+
+# Clear QML cache
+rm -rf ~/.cache/Logos/LogosBasecamp/qmlcache
 ```
 
-### Build the portable installable
+Restart Logos Basecamp — all five modules should appear in the sidebar.
+
+---
+
+### Option B — build from source
+
+Requires [Nix with flakes](https://nixos.org/download) (`nix --version` ≥ 2.18).
 
 ```bash
 git clone https://github.com/xAlisher/keeper-basecamp
@@ -81,9 +116,7 @@ cd keeper-basecamp
 nix build .#packages.x86_64-linux.install-portable
 ```
 
-Output is at `result/modules/keeper/`.
-
-Verify the RPATH is correct before installing:
+Output is at `result/modules/keeper/`. Verify RPATH before installing:
 
 ```bash
 patchelf --print-rpath result/modules/keeper/keeper_plugin.so
@@ -91,26 +124,14 @@ patchelf --print-rpath result/modules/keeper/keeper_plugin.so
 # Must NOT contain any /nix/store/*/qtbase* paths
 ```
 
----
-
-## Install
-
-### One-shot install script
+Then install manually:
 
 ```bash
 INSTALL_DIR=~/.local/share/Logos/LogosBasecamp/modules/keeper
-
-# Remove stale install (safe — Basecamp will reload from fresh)
 chmod -R u+w "$INSTALL_DIR" 2>/dev/null; rm -rf "$INSTALL_DIR"
-
-# Copy build output
 cp -r result/modules/keeper/. "$INSTALL_DIR/"
-
-# Copy source metadata (required for module discovery)
 cp metadata.json "$INSTALL_DIR/"
 
-# Strip hashes from manifest — platform rejects dev modules with hashes field
-# (triggers public registry check; always fails for private/dev modules)
 chmod u+w "$INSTALL_DIR/manifest.json"
 python3 -c "
 import json
@@ -119,25 +140,21 @@ m.pop('hashes', None)
 m['main']['linux-amd64'] = 'keeper_plugin.so'
 with open('$INSTALL_DIR/manifest.json', 'w') as f: json.dump(m, f, indent=2)"
 
-# Set variant to linux-amd64 (build produces linux-amd64-dev by default)
 echo "linux-amd64" > "$INSTALL_DIR/variant"
 
-# Install QML UI plugin
 UI_DIR=~/.local/share/Logos/LogosBasecamp/plugins/keeper_ui
 mkdir -p "$UI_DIR/qml"
 cp keeper-ui/qml/Main.qml "$UI_DIR/qml/Main.qml"
 cp keeper-ui/qml/Main.qml "$UI_DIR/Main.qml"
-
-# Clear QML cache so Basecamp picks up new UI
 rm -rf ~/.cache/Logos/LogosBasecamp/qmlcache
 ```
 
+Do the same for each dependency (stash, beacon, cord, keycard) using `install-portable` from their respective repos.
+
 ### Stale module cleanup
 
-If a previous version is already installed:
-
 ```bash
-# Also remove any stale keeper-ui from modules/ (old install path)
+# Remove stale keeper-ui from modules/ (old install path)
 rm -rf ~/.local/share/Logos/LogosBasecamp/modules/keeper-ui
 ```
 
