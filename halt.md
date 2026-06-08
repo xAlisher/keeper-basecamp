@@ -2,33 +2,33 @@
 
 ## Where we stopped
 
-Completed a full post-merge retro session covering keeper, beacon, stash, and cord.
-Extracted 3 new basecamp-skills recipes (zone-seq-data-bytes-not-path, zone-seq-no-checkpoint-one-shot,
-zone-seq-sleep-before-destroy), updated ipc-client-eager-init with the permanent QRO failure mode,
-created PROJECT_KNOWLEDGE.md for keeper and beacon, rewrote READMEs for all 4 modules, triaged and
-closed all fixed GitHub issues across all repos, and fixed both open cord bugs (node URL persistence +
-dispatch log live-update). Session ended cleanly — no in-progress work.
+Published LGX releases for all 5 IA loop modules (keeper, stash, beacon, cord, keycard),
+updated keeper README with LGX install path, corrected zone sequencer / storage module
+dependencies, and added keeper-extension repo link. Session was mostly docs + packaging —
+no code changes to any module. Also had a strategic discussion about module consolidation
+(merge keeper+stash+beacon) and Berlin dry run readiness.
 
 ## Current state
 
 - Branch: main
-- Last commit: 191cb40 docs: rewrite README — full install recipe, dependencies, build, tests, IPC architecture
-- Build status: passing (Tier 1 17/17, integration confirmed working Jun 7)
+- Last commit: 3b819f2 docs: fix explorer link framing, zone-seq/storage deps, add extension repo link
+- Build status: passing (all LGX builds verified; Tier 1 + integration confirmed Jun 7)
 - Open review: none
 
 ## Next steps (in order)
 
-1. **keeper #25** — UX: inscription lifecycle states — progress bar, slots countdown, copy URL
+1. **cord: "keep from feed"** — add Keep button to Cord's dispatch log so users can
+   preserve items from others' channels. New feature, ~1-2 weeks. Needed before Berlin.
+2. **keeper #25** — UX: inscription lifecycle states — progress bar, slots countdown
    (keeper QML needs slotFrom/libAtSubmit from beaconLogMap; beacon already has this data)
-2. **keeper #20** — Add copy button to activity log entries (CID, identifier)
-3. **keeper #18** — Re-inscribe duplicate: bypass beacon dedup when user explicitly retries
-4. **keeper #10/#11** — Fix popup text + add Settings panel (small UI work, low-risk)
-5. **keeper #9** — pairing reentrancy: add pollBusy guard to doAdd() callModule
-6. **keeper #15** — Timestamps don't match local time (timezone fix)
-7. **keeper #12/#13** — HTTP bridge security: CORS wildcard + no auth on /queue /status
-8. **beacon #16** — Add per-entry copy button to activity log
-9. **beacon #9** — Adopt logos-design-system tokens (stash #17 same)
-10. **keeper #6/#7** — Logos Messaging migration (large, deferred)
+3. **keeper #20** — Add copy button to activity log entries (CID, identifier)
+4. **keeper #18** — Re-inscribe duplicate: bypass beacon dedup when user explicitly retries
+5. **keeper #10/#11** — Fix popup text + add Settings panel (small UI, low-risk)
+6. **keeper #9** — pairing reentrancy: add pollBusy guard to doAdd() callModule
+7. **keeper #15** — Timestamps don't match local time (timezone fix)
+8. **keeper #12/#13** — HTTP bridge security: CORS wildcard + no auth on /queue /status
+9. **stash fix/caller-source-dropped** — uncommitted changes to src/plugin/StashPlugin.cpp
+   and StashPlugin.h need review and commit before they're lost
 
 ## Blockers
 
@@ -36,20 +36,25 @@ dispatch log live-update). Session ended cleanly — no in-progress work.
 
 ## Context that's hard to re-derive
 
-- cord dispatch log bug root cause: `dispatchLogModel.insert` was gated on `res && res.ok` from
-  `recordDispatch`; if that call returned anything other than `{"ok":true}` (duplicate, encoding issue),
-  the live insert was silently skipped. Fix: decouple insert from recordDispatch, check by messageId.
+- **Both root causes (zone_sequencer hash bug + sneg minority fork) were fixed on Jun 7.**
+  There was a stale plan file (mossy-tinkering-russell.md) re-raising them as open — it was
+  deleted this session. Do not re-raise these issues.
 
-- getClient() permanently broken in keeper: not a timing issue, not fixable with retry. QML-mediated
-  IPC (pendingUpload_ pattern) is the confirmed working path. Never attempt getClient() in keeper again.
+- **Module consolidation decision**: merge keeper+stash+beacon into one module makes sense
+  post-Berlin (eliminates QML-mediated IPC workarounds entirely). logos-notes dependency on
+  stash/beacon is irrelevant to the IA loop decision. Not before Berlin — too risky.
 
-- zone_sequencer_publish() return value vs explorer hash: the Python FFI returns a Poseidon2 hash that
-  differs from mantle_tx.hash. beacon's findExplorerTxHash 2-step is the correct approach for explorer
-  URLs. The Logos QML module publish() returns the correct hash; the raw C FFI does not.
+- **Berlin message sent to mart1n/jonny/vpavlin**: recommendation is keep modular, focus on
+  cord "keep from feed" this week, Alisher attending LANBerlin first half of day.
 
-- install-portable vs install: ALWAYS use install-portable for keeper. The plain install target embeds
-  Nix store RPATH → dual Qt heap corruption → std::bad_alloc at runtime. Verify with patchelf.
+- **LGX releases published**: all 5 modules now have GitHub Releases with core + UI LGX files.
+  beacon_ui and cord_ui had no Nix flake before this session — added mkLogosQmlModule flakes.
+  cord_ui had empty icon field that broke the build — fixed to point at Cord_sidebar.png.
 
-- stash-basecamp is on branch fix/caller-source-dropped (not main) with uncommitted changes to
-  src/plugin/StashPlugin.cpp, StashPlugin.h, .gitignore. The README was cherry-picked to main.
-  The in-progress changes on the branch are related to caller/source field work — do not discard.
+- **zone sequencer**: NOT shipped with AppImage. From vpavlin/zone-sequencer-module, built
+  with xAlisher/zone-sequencer-rs fork (stale-checkpoint fix). storage_module must be
+  vpavlin/logos-storage-module at v0.3.2 (9552adf) — newer versions deadlock uploadUrl.
+
+- **stash WIP**: src/plugin/StashPlugin.cpp and StashPlugin.h have uncommitted caller-source
+  changes on main (git stash was popped after LGX build). These are in-progress work, do not
+  discard.
