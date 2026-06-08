@@ -32,7 +32,7 @@ archive.org/details/<id>
 2. **Download** — Keeper fetches files from the IA CDN, up to `maxFilesPerItem` (default 20), optionally skipping derivatives
 3. **Store** — each file is uploaded to Logos Storage via Stash; a final collection CID is pinned
 4. **Inscribe** — Beacon publishes `{module:"keeper", id, title, files:[...]}` to your dedicated Keeper channel, signed by your Ed25519 key
-5. **Discover** — anyone subscribed to your channel in Cord sees the inscription with a working explorer link
+5. **Discover** — anyone subscribed to your channel in Cord sees the inscription payload: IA identifier, title, and file CIDs — all the data needed to retrieve and verify the collection
 
 ---
 
@@ -46,7 +46,8 @@ All dependencies must be installed and loaded in Logos Basecamp before Keeper op
 | **keeper-ui** (this) | `keeper_ui` (plugin) | [keeper-basecamp](https://github.com/xAlisher/keeper-basecamp) | [v0.1.0 LGX](https://github.com/xAlisher/keeper-basecamp/releases/tag/v0.1.0) |
 | **stash** | `stash` | [stash-basecamp](https://github.com/xAlisher/stash-basecamp) | [v0.1.0 LGX](https://github.com/xAlisher/stash-basecamp/releases/tag/v0.1.0) |
 | **beacon** | `logos_beacon` | [beacon-basecamp](https://github.com/xAlisher/beacon-basecamp) | [v1.0.0 LGX](https://github.com/xAlisher/beacon-basecamp/releases/tag/v1.0.0) |
-| **zone sequencer** | `liblogos_zone_sequencer_module` | shipped with Basecamp AppImage | — |
+| **zone sequencer** | `liblogos_zone_sequencer_module` | [vpavlin/zone-sequencer-module](https://github.com/vpavlin/zone-sequencer-module) — **not in AppImage**, install separately; uses [xAlisher/zone-sequencer-rs](https://github.com/xAlisher/zone-sequencer-rs) fork with stale-checkpoint fix | — |
+| **storage_module** | `storage_module` | [vpavlin/logos-storage-module](https://github.com/vpavlin/logos-storage-module) — **must use `v0.3.2` (`9552adf`)**; newer versions deadlock `uploadUrl` | — |
 | **cord** | `logos_cord` | [cord-basecamp](https://github.com/xAlisher/cord-basecamp) | [v1.0.0 LGX](https://github.com/xAlisher/cord-basecamp/releases/tag/v1.0.0) |
 | **keycard** | `logos_keycard` | [keycard-basecamp](https://github.com/xAlisher/keycard-basecamp) | [v1.0.0 LGX](https://github.com/xAlisher/keycard-basecamp/releases/tag/v1.0.0) |
 
@@ -194,12 +195,14 @@ curl -s http://127.0.0.1:7355/status
 
 The companion extension adds a **[ Keep ]** button to every `archive.org/details/*` page.
 
-```
-extensions/keeper-extension/   ← load unpacked in chrome://extensions
+Repo: [xAlisher/keeper-extension](https://github.com/xAlisher/keeper-extension)
+
+```bash
+git clone https://github.com/xAlisher/keeper-extension
 ```
 
 1. Open `chrome://extensions`, enable **Developer mode**
-2. **Load unpacked** → select `extensions/keeper-extension/`
+2. **Load unpacked** → select the cloned `keeper-extension/` directory
 3. Visit any `archive.org/details/*` page — press **Keep**
 
 ---
@@ -306,7 +309,7 @@ module_data/keeper/<instanceId>/
 
 ## Status
 
-`v0.1.0` — working on LEZ testnet. Confirmed end-to-end: download → Logos Storage CIDs → on-chain inscription with working explorer link.
+`v0.1.0` — working on LEZ testnet. Confirmed end-to-end: download → Logos Storage CIDs → on-chain inscription. The inscription payload (IA id, title, file CIDs) is live on-chain and readable by any Cord subscriber.
 
 Known limitations:
 - Sequential file downloads (no parallelism)
