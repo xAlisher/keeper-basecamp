@@ -48,7 +48,7 @@ All dependencies must be installed and loaded in Logos Basecamp before Keeper op
 | **beacon** | `logos_beacon` | [beacon-basecamp](https://github.com/xAlisher/beacon-basecamp) | CID → on-chain inscription via Zone Sequencer |
 | **zone sequencer** | `liblogos_zone_sequencer_module` | shipped with Basecamp AppImage | publishes to LEZ chain |
 | **cord** | `logos_cord` | [cord-basecamp](https://github.com/xAlisher/cord-basecamp) | channel subscription + discovery (optional for basic use) |
-| **keycard** | `logos_keycard` | [keycard-basecamp](https://github.com/xAlisher/keycard-basecamp) | Ed25519 signing key (optional — beacon generates its own key if absent) |
+| **keycard** | `logos_keycard` | [keycard-basecamp](https://github.com/xAlisher/keycard-basecamp) | Ed25519 signing key — required for key portability; Beacon falls back to a local key file if absent but that key can't be reproduced after reinstall |
 
 ### Runtime environment
 
