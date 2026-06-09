@@ -46,7 +46,7 @@ All dependencies must be installed and loaded in Logos Basecamp before Keeper op
 | **keeper-ui** (this) | `keeper_ui` (plugin) | [keeper-basecamp](https://github.com/xAlisher/keeper-basecamp) | [v0.1.0 LGX](https://github.com/xAlisher/keeper-basecamp/releases/tag/v0.1.0) |
 | **stash** | `stash` | [stash-basecamp](https://github.com/xAlisher/stash-basecamp) | [v0.1.0 LGX](https://github.com/xAlisher/stash-basecamp/releases/tag/v0.1.0) |
 | **beacon** | `logos_beacon` | [beacon-basecamp](https://github.com/xAlisher/beacon-basecamp) | [v1.0.0 LGX](https://github.com/xAlisher/beacon-basecamp/releases/tag/v1.0.0) |
-| **zone sequencer** | `liblogos_zone_sequencer_module` | [vpavlin/zone-sequencer-module](https://github.com/vpavlin/zone-sequencer-module) — **not in AppImage**, install separately; uses [xAlisher/zone-sequencer-rs](https://github.com/xAlisher/zone-sequencer-rs) fork with stale-checkpoint fix | — |
+| **zone sequencer** | `liblogos_zone_sequencer_module` | [xAlisher/logos-zone-sequencer-module](https://github.com/xAlisher/logos-zone-sequencer-module) — **not in AppImage**, fork of jimmy-claw's with stale-checkpoint + fr_from_bytes fixes | [v0.1.2 LGX](https://github.com/xAlisher/logos-zone-sequencer-module/releases/tag/v0.1.2) |
 | **storage_module** | `storage_module` | [vpavlin/logos-storage-module](https://github.com/vpavlin/logos-storage-module) — **must use `v0.3.2` (`9552adf`)**; newer versions deadlock `uploadUrl` | — |
 | **cord** | `logos_cord` | [cord-basecamp](https://github.com/xAlisher/cord-basecamp) | [v1.0.0 LGX](https://github.com/xAlisher/cord-basecamp/releases/tag/v1.0.0) |
 | **keycard** | `logos_keycard` | [keycard-basecamp](https://github.com/xAlisher/keycard-basecamp) | [v1.0.0 LGX](https://github.com/xAlisher/keycard-basecamp/releases/tag/v1.0.0) |
@@ -69,6 +69,10 @@ Download the LGX files from each module's release page and install with `lgpm`. 
 lgpm=$(find /nix/store -name lgpm -path "*/logos-package-manager-cli-*/bin/lgpm" 2>/dev/null | head -1)
 MDIR=~/.local/share/Logos/LogosBasecamp/modules
 PDIR=~/.local/share/Logos/LogosBasecamp/plugins
+
+# 0. Zone Sequencer — https://github.com/xAlisher/logos-zone-sequencer-module/releases/tag/v0.1.2
+rm -rf $MDIR/liblogos_zone_sequencer_module
+$lgpm --modules-dir $MDIR --allow-unsigned install --file zone-sequencer-v0.1.2.lgx
 
 # 1. Keycard — https://github.com/xAlisher/keycard-basecamp/releases/tag/v1.0.0
 rm -rf $MDIR/logos_keycard $PDIR/keycard_ui
