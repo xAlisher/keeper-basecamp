@@ -5,7 +5,7 @@
   "category": "storage",
   "description": "Preserve Internet Archive collections — download, store CIDs, inscribe on-chain",
   "main": "keeper_plugin",
-  "dependencies": [],
+  "dependencies": ["logos_cord", "logos_beacon", "stash", "logos_keycard"],
 
   "nix": {
     "packages": {
