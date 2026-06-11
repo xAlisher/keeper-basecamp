@@ -243,7 +243,7 @@ Each on-chain inscription is a JSON payload attached to the collection CID:
 The inscription is published to your Beacon channel on the LEZ testnet. The explorer link appears in the Keeper log panel once the transaction is confirmed:
 
 ```
-https://testnet.blockchain.logos.co/web/explorer/transactions/<txHash>
+https://logosblocks.noders.services/txs/<txHash>
 ```
 
 ---

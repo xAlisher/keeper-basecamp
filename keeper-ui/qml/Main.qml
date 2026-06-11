@@ -27,6 +27,8 @@ Item {
     property var    pendingUpload:  null   // {id, file, path} while uploading
     property int    uploadAttempts: 0
     property var    beaconLogMap:   ({})   // cid → {txHash, slotFrom, libAtSubmit, status}
+    property string explorerUrl:    "https://logosblocks.noders.services"
+    property bool   explorerUrlLoaded: false
 
     // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -85,6 +87,15 @@ Item {
         // Current lib_slot for inscription progress bars
         var niRaw = callModuleParse(logos.callModule("logos_beacon", "getNodeInfo", []))
         if (niRaw && niRaw.lib_slot) root.currentLibSlot = niRaw.lib_slot
+
+        // Explorer base URL from beacon config (once)
+        if (!root.explorerUrlLoaded) {
+            var bcRaw = callModuleParse(logos.callModule("logos_beacon", "getBeaconConfig", []))
+            if (bcRaw && bcRaw.explorerUrl) {
+                root.explorerUrl = bcRaw.explorerUrl
+                root.explorerUrlLoaded = true
+            }
+        }
 
         // Bridge status
         var bRaw = callModuleParse(logos.callModule("keeper", "getBridgeStatus", []))
@@ -168,7 +179,7 @@ Item {
                     entryCollectionCid: collCid,
                     entryTxHash: txHash,
                     entryExplorerUrl: txHash
-                        ? "https://testnet.blockchain.logos.co/web/explorer/transactions/" + txHash
+                        ? root.explorerUrl + "/txs/" + txHash
                         : "",
                     entryInscriptionStatus: bEntry.status || (txHash ? "confirmed" : (collCid ? "submitted" : "")),
                     entrySlotFrom:    bEntry.slotFrom    || 0,

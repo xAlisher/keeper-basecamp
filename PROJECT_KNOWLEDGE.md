@@ -146,7 +146,7 @@ VERIFY_BLOCKCHAIN=1 ./tests/run-integration-tests.sh --item anarchy_Cypherpunk_M
 
 `VERIFY_BLOCKCHAIN=1` polls the keeper log for a `collectionCid`, then verifies the
 inscription appears on the canonical explorer at
-`https://testnet.blockchain.logos.co/web/explorer/transactions/{txHash}`.
+`https://logosblocks.noders.services/txs/{txHash}`.
 
 ### Node canonical chain check
 
@@ -154,7 +154,7 @@ Before running integration tests, verify the node is on canonical chain:
 
 ```bash
 LIB=$(curl -s http://localhost:8080/cryptarchia/info | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['lib_block'])")
-curl -s "https://testnet.blockchain.logos.co/web/explorer/api/v1/blocks/$LIB?fork=0" | python3 -m json.tool
+curl -s "https://logosblocks.noders.services/api/blocks/$LIB" | python3 -m json.tool
 # Should return the block, not 404
 ```
 
