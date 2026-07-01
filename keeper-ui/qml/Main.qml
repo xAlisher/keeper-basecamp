@@ -1,21 +1,22 @@
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls
+import Logos.Theme // logos-design-system (native on RC3+ Basecamp) — skill: logos-design-system-adoption
 
 Item {
     id: root
 
     // ── Palette ───────────────────────────────────────────────────────────
-    readonly property color bgPrimary:     "#171717"
-    readonly property color bgSecondary:   "#262626"
-    readonly property color bgActive:      "#332A27"
-    readonly property color textPrimary:   "#FFFFFF"
-    readonly property color textSecondary: "#A4A4A4"
-    readonly property color textMuted:     "#5D5D5D"
-    readonly property color accentOrange:  "#FF5000"
-    readonly property color successGreen:  "#22C55E"
-    readonly property color errorRed:      "#FB3748"
-    readonly property color borderColor:   "#383838"
+    readonly property color bgPrimary:     Theme.palette.background
+    readonly property color bgSecondary:   Theme.palette.backgroundSecondary
+    readonly property color bgActive:      Theme.palette.surface
+    readonly property color textPrimary:   Theme.palette.text
+    readonly property color textSecondary: Theme.palette.textSecondary
+    readonly property color textMuted:     Theme.palette.textMuted
+    readonly property color accentOrange:  Theme.palette.primary
+    readonly property color successGreen:  Theme.palette.success
+    readonly property color errorRed:      Theme.palette.error
+    readonly property color borderColor:   Theme.palette.border
 
     // ── State ─────────────────────────────────────────────────────────────
     property bool   pollBusy:       false
