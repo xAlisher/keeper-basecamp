@@ -1,0 +1,40 @@
+// QtRO contract for keeper_ui's backend. QML binds via logos.module("keeper_ui")
+// and calls these SLOTs wrapped in logos.watch(...). keeper + logos_beacon are
+// universal Qt-free modules, so legacy logos.callModule("keeper"/"logos_beacon", …)
+// now returns "null"; these SLOTs forward SYNC through modules().keeper.* /
+// modules().logos_beacon.* and return a JSON string the QML parses.
+//
+// stash is a LEGACY module — a SYNC modules().stash.* call deadlocks the single-
+// threaded ui-host loop (skill: universal-modules-sync-call-deadlocks-ui-host).
+// So the upload path is fire-and-forget + internal poll: QML calls startUpload(),
+// the backend drives stash async, and the CID/error surfaces via the lastUpload
+// READONLY PROP (JSON {id,file,cid} or {id,file,error}) which QML observes.
+class KeeperUi
+{
+    PROP(QString status="Ready" READONLY)
+    PROP(QString lastUpload="" READONLY)
+
+    // ── keeper (universal → SYNC forward) ─────────────────────────────────────
+    SLOT(QString getBridgeStatus())
+    SLOT(QString getQueue())
+    SLOT(QString getPendingUpload())
+    SLOT(QString getLog())
+    SLOT(QString preserveItem(QString urlOrId))
+    SLOT(QString clearQueue())
+    SLOT(QString cancelItem(QString id))
+    SLOT(QString clearLog())
+
+    // ── logos_beacon (universal → SYNC forward) ───────────────────────────────
+    SLOT(QString getNodeInfo())
+    SLOT(QString getBeaconConfig())
+    SLOT(QString getInscriptionLog())
+
+    // ── stash (legacy → ASYNC fire-and-forget + internal poll) ────────────────
+    // Fires stash.uploadAsync, then polls stash.getLatestLogosResultAsync; on a
+    // basename match forwards keeper.onUploadResult(id,file,cid) (sync) and sets
+    // the lastUpload PROP. NEVER call modules().stash.* synchronously.
+    SLOT(QString startUpload(QString path, QString id, QString file))
+
+    // Health probe.
+    SLOT(QString ping())
+}

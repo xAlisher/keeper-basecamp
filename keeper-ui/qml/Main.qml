@@ -19,17 +19,26 @@ Item {
     readonly property color borderColor:   Theme.palette.border
 
     // ── State ─────────────────────────────────────────────────────────────
-    property bool   pollBusy:       false
     property bool   bridgeRunning:  false
     property int    bridgePort:     7355
     property int    currentLibSlot: 0
 
-    // Upload handoff: QML drives stash IPC (getClient is broken in C++)
+    // Upload handoff: the C++ QtRO backend drives the legacy stash upload async
+    // (a sync modules().stash.* call would deadlock the ui-host loop); QML only
+    // kicks it via keeperUi.startUpload() and reacts to the lastUpload PROP.
     property var    pendingUpload:  null   // {id, file, path} while uploading
-    property int    uploadAttempts: 0
     property var    beaconLogMap:   ({})   // cid → {txHash, slotFrom, libAtSubmit, status}
     property string explorerUrl:    "https://logosblocks.noders.services"
     property bool   explorerUrlLoaded: false
+
+    // ── keeper_ui QtRO backend (v0.2 universal) ─────────────────────────────
+    // keeper + logos_beacon are now Qt-free universal modules, so legacy
+    // logos.callModule("keeper"/"logos_beacon", …) returns "null". We reach them
+    // (and drive the legacy stash upload async) through keeper_ui's own C++
+    // backend via logos.module("keeper_ui") + logos.watch(...).
+    readonly property var keeperUi: (typeof logos !== "undefined" && logos.module)
+                                    ? logos.module("keeper_ui") : null
+    property bool keeperReady: false
 
     // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -76,38 +85,73 @@ Item {
         return root.textSecondary
     }
 
-    function refresh() {
-        if (root.pollBusy) return
-        root.pollBusy = true
-
-        if (typeof logos === "undefined" || !logos.callModule) {
-            root.pollBusy = false
-            return
+    // Rebuild the keeper log model using the current beaconLogMap. Called after
+    // getLog resolves (async); kept a separate fn so a fresh beaconLogMap re-renders.
+    function rebuildLog(lRaw) {
+        if (!Array.isArray(lRaw)) return
+        logModel.clear()
+        for (var k = 0; k < lRaw.length; k++) {
+            var entry = lRaw[k]
+            var cidList = []
+            if (Array.isArray(entry.files)) {
+                for (var fi = 0; fi < entry.files.length; fi++) {
+                    var c = entry.files[fi].cid
+                    if (c) cidList.push(fmtCid(c))
+                }
+            }
+            var collCid = entry.collectionCid || ""
+            var bEntry  = collCid ? (root.beaconLogMap[collCid] || {}) : {}
+            var txHash  = bEntry.txHash || ""
+            logModel.append({
+                entryTs:    entry.ts    || 0,
+                entryTitle: entry.title || entry.id || "",
+                entryCids:  cidList.join(", "),
+                entrySize:  fmtSize(entry.totalSize || 0),
+                entryCollectionCid: collCid,
+                entryTxHash: txHash,
+                entryExplorerUrl: txHash
+                    ? root.explorerUrl + "/txs/" + txHash
+                    : "",
+                entryInscriptionStatus: bEntry.status || (txHash ? "confirmed" : (collCid ? "submitted" : "")),
+                entrySlotFrom:    bEntry.slotFrom    || 0,
+                entryLibAtSubmit: bEntry.libAtSubmit || 0
+            })
         }
+    }
 
-        // Current lib_slot for inscription progress bars
-        var niRaw = callModuleParse(logos.callModule("logos_beacon", "getNodeInfo", []))
-        if (niRaw && niRaw.lib_slot) root.currentLibSlot = niRaw.lib_slot
+    function refresh() {
+        if (!root.keeperUi) return
+
+        // Current lib_slot for inscription progress bars (logos_beacon, sync forward)
+        logos.watch(root.keeperUi.getNodeInfo(), function (raw) {
+            var niRaw = callModuleParse(raw)
+            if (niRaw && niRaw.lib_slot) root.currentLibSlot = niRaw.lib_slot
+        }, function () {})
 
         // Explorer base URL from beacon config (once)
         if (!root.explorerUrlLoaded) {
-            var bcRaw = callModuleParse(logos.callModule("logos_beacon", "getBeaconConfig", []))
-            if (bcRaw && bcRaw.explorerUrl) {
-                root.explorerUrl = bcRaw.explorerUrl
-                root.explorerUrlLoaded = true
+            logos.watch(root.keeperUi.getBeaconConfig(), function (raw) {
+                var bcRaw = callModuleParse(raw)
+                if (bcRaw && bcRaw.explorerUrl) {
+                    root.explorerUrl = bcRaw.explorerUrl
+                    root.explorerUrlLoaded = true
+                }
+            }, function () {})
+        }
+
+        // Bridge status (keeper, sync forward)
+        logos.watch(root.keeperUi.getBridgeStatus(), function (raw) {
+            var bRaw = callModuleParse(raw)
+            if (bRaw) {
+                root.bridgeRunning = bRaw.running === true
+                if (bRaw.port) root.bridgePort = bRaw.port
             }
-        }
+        }, function () {})
 
-        // Bridge status
-        var bRaw = callModuleParse(logos.callModule("keeper", "getBridgeStatus", []))
-        if (bRaw) {
-            root.bridgeRunning = bRaw.running === true
-            if (bRaw.port) root.bridgePort = bRaw.port
-        }
-
-        // Queue
-        var qRaw = callModuleParse(logos.callModule("keeper", "getQueue", []))
-        if (Array.isArray(qRaw)) {
+        // Queue (keeper, sync forward)
+        logos.watch(root.keeperUi.getQueue(), function (raw) {
+            var qRaw = callModuleParse(raw)
+            if (!Array.isArray(qRaw)) return
             queueModel.clear()
             for (var i = 0; i < qRaw.length; i++) {
                 var item = qRaw[i]
@@ -127,69 +171,44 @@ Item {
                     totalFiles: total
                 })
             }
-        }
+        }, function () {})
 
         // Beacon log — build cid → inscription info map for keeper log display
-        var bLogRaw = callModuleParse(logos.callModule("logos_beacon", "getInscriptionLog", []))
-        var bMap = {}
-        if (Array.isArray(bLogRaw)) {
-            for (var bi = 0; bi < bLogRaw.length; bi++) {
-                var be = bLogRaw[bi]
-                if (be.cid) bMap[be.cid] = {
-                    txHash:     be.inscriptionId || "",
-                    slotFrom:   be.slotFrom      || 0,
-                    libAtSubmit: be.libAtSubmit  || 0,
-                    status:     be.status        || ""
-                }
-            }
-        }
-        root.beaconLogMap = bMap
-
-        // Stash upload handoff: check for a pending upload from C++
-        if (!root.pendingUpload) {
-            var puRaw = callModuleParse(logos.callModule("keeper", "getPendingUpload", []))
-            if (puRaw && puRaw.path) {
-                root.pendingUpload  = puRaw
-                root.uploadAttempts = 0
-                logos.callModule("stash", "upload", [puRaw.path, "keeper"])
-                stashPollTimer.start()
-            }
-        }
-
-        // Log — full rebuild each poll so txHash updates are picked up
-        var lRaw = callModuleParse(logos.callModule("keeper", "getLog", []))
-        if (Array.isArray(lRaw)) {
-            logModel.clear()
-            for (var k = 0; k < lRaw.length; k++) {
-                var entry = lRaw[k]
-                var cidList = []
-                if (Array.isArray(entry.files)) {
-                    for (var fi = 0; fi < entry.files.length; fi++) {
-                        var c = entry.files[fi].cid
-                        if (c) cidList.push(fmtCid(c))
+        // (logos_beacon, sync forward). Rebuild the log after this so txHash lands.
+        logos.watch(root.keeperUi.getInscriptionLog(), function (raw) {
+            var bLogRaw = callModuleParse(raw)
+            var bMap = {}
+            if (Array.isArray(bLogRaw)) {
+                for (var bi = 0; bi < bLogRaw.length; bi++) {
+                    var be = bLogRaw[bi]
+                    if (be.cid) bMap[be.cid] = {
+                        txHash:     be.inscriptionId || "",
+                        slotFrom:   be.slotFrom      || 0,
+                        libAtSubmit: be.libAtSubmit  || 0,
+                        status:     be.status        || ""
                     }
                 }
-                var collCid = entry.collectionCid || ""
-                var bEntry  = collCid ? (root.beaconLogMap[collCid] || {}) : {}
-                var txHash  = bEntry.txHash || ""
-                logModel.append({
-                    entryTs:    entry.ts    || 0,
-                    entryTitle: entry.title || entry.id || "",
-                    entryCids:  cidList.join(", "),
-                    entrySize:  fmtSize(entry.totalSize || 0),
-                    entryCollectionCid: collCid,
-                    entryTxHash: txHash,
-                    entryExplorerUrl: txHash
-                        ? root.explorerUrl + "/txs/" + txHash
-                        : "",
-                    entryInscriptionStatus: bEntry.status || (txHash ? "confirmed" : (collCid ? "submitted" : "")),
-                    entrySlotFrom:    bEntry.slotFrom    || 0,
-                    entryLibAtSubmit: bEntry.libAtSubmit || 0
-                })
             }
-        }
+            root.beaconLogMap = bMap
 
-        root.pollBusy = false
+            // Log — full rebuild each poll so txHash updates are picked up (keeper)
+            logos.watch(root.keeperUi.getLog(), function (lraw) {
+                root.rebuildLog(callModuleParse(lraw))
+            }, function () {})
+        }, function () {})
+
+        // Stash upload handoff: hand a pending upload to the backend, which drives
+        // the legacy stash upload async and surfaces the CID via the lastUpload PROP.
+        if (!root.pendingUpload) {
+            logos.watch(root.keeperUi.getPendingUpload(), function (raw) {
+                var puRaw = callModuleParse(raw)
+                if (puRaw && puRaw.path && !root.pendingUpload) {
+                    root.pendingUpload = puRaw
+                    logos.watch(root.keeperUi.startUpload(puRaw.path, puRaw.id, puRaw.file),
+                                function () {}, function () {})
+                }
+            }, function () {})
+        }
     }
 
     // ── Timer ─────────────────────────────────────────────────────────────
@@ -201,39 +220,42 @@ Item {
         onTriggered: root.refresh()
     }
 
-    // Polls stash getLatestLogosResult after triggering an upload
-    Timer {
-        id: stashPollTimer
-        interval: 2000
-        running: false
-        repeat: true
-        onTriggered: {
-            if (!root.pendingUpload) { stop(); return }
-            root.uploadAttempts++
-            if (root.uploadAttempts > 60) {
-                // Timeout after 120s — advance without CID
-                var pu = root.pendingUpload
-                root.pendingUpload = null
-                stop()
-                logos.callModule("keeper", "onUploadResult", [pu.id, pu.file, ""])
-                return
-            }
-            var latestRaw = logos.callModule("stash", "getLatestLogosResult", [])
-            var latest = root.callModuleParse(latestRaw)
-            if (latest && latest.cid && latest.file) {
-                var latestBase = latest.file.split("/").pop().split("\\").pop()
-                var pendingBase = root.pendingUpload.path.split("/").pop().split("\\").pop()
-                if (latestBase === pendingBase) {
-                    var pu2 = root.pendingUpload
-                    root.pendingUpload = null
-                    stop()
-                    logos.callModule("keeper", "onUploadResult", [pu2.id, pu2.file, latest.cid])
-                }
+    // The backend owns the stash upload poll now (it drives stash async and
+    // fires keeper.onUploadResult on a CID match). QML only reacts to the
+    // lastUpload PROP: {id,file,cid} on success or {id,file,error} on timeout —
+    // either way, clear pendingUpload so the next getPendingUpload can hand off.
+    Connections {
+        target: root.keeperUi
+        ignoreUnknownSignals: true
+        function onLastUploadChanged() {
+            if (!root.keeperUi || !root.keeperUi.lastUpload) return
+            var r = root.callModuleParse(root.keeperUi.lastUpload)
+            if (!r || !r.id) return
+            root.pendingUpload = null   // keeper already recorded the CID backend-side
+            root.refresh()
+        }
+    }
+
+    // Universal-module readiness gate: the backend's QtRO context must be wired
+    // before modules().keeper/.logos_beacon calls succeed.
+    Connections {
+        target: logos
+        ignoreUnknownSignals: true
+        function onViewModuleReadyChanged(moduleName, isReady) {
+            if (moduleName === "keeper_ui") {
+                root.keeperReady = isReady && root.keeperUi !== null
+                if (root.keeperReady) root.refresh()
             }
         }
     }
 
-    Component.onCompleted: root.refresh()
+    Component.onCompleted: {
+        if (typeof logos === "undefined" || !logos.module) return
+        if (root.keeperUi !== null && logos.isViewModuleReady("keeper_ui")) {
+            root.keeperReady = true
+            root.refresh()
+        }
+    }
 
     // Clipboard helper — zero-opacity TextEdit used to copy text to clipboard
     // Must NOT be visible:false — invisible items can't receive focus needed for copy()
@@ -345,10 +367,10 @@ Item {
                 function doKeep() {
                     var val = urlField.text.trim()
                     if (!val) return
-                    if (typeof logos === "undefined" || !logos.callModule) return
-                    logos.callModule("keeper", "preserveItem", [val])
+                    if (!root.keeperUi) return
+                    logos.watch(root.keeperUi.preserveItem(val),
+                                function () { root.refresh() }, function () {})
                     urlField.text = ""
-                    root.refresh()
                 }
 
                 Text {
@@ -399,9 +421,9 @@ Item {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
-                            if (typeof logos === "undefined" || !logos.callModule) return
-                            logos.callModule("keeper", "clearQueue", [])
-                            root.refresh()
+                            if (!root.keeperUi) return
+                            logos.watch(root.keeperUi.clearQueue(),
+                                        function () { root.refresh() }, function () {})
                         }
                     }
                 }
@@ -500,9 +522,9 @@ Item {
                                 hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
                                 onClicked: {
-                                    if (typeof logos === "undefined" || !logos.callModule) return
-                                    logos.callModule("keeper", "cancelItem", [identifier])
-                                    root.refresh()
+                                    if (!root.keeperUi) return
+                                    logos.watch(root.keeperUi.cancelItem(identifier),
+                                                function () { root.refresh() }, function () {})
                                 }
                             }
                         }
@@ -542,9 +564,9 @@ Item {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
-                            if (typeof logos === "undefined" || !logos.callModule) return
-                            logos.callModule("keeper", "clearLog", [])
-                            root.refresh()
+                            if (!root.keeperUi) return
+                            logos.watch(root.keeperUi.clearLog(),
+                                        function () { root.refresh() }, function () {})
                         }
                     }
                 }

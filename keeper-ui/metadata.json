@@ -1,13 +1,16 @@
 {
   "name": "keeper_ui",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "ui_qml",
+  "interface": "universal",
   "category": "storage",
   "description": "Preserve Internet Archive collections to Logos Storage — UI",
+  "main": "keeper_ui_plugin",
   "view": "qml/Main.qml",
   "icon": "keeper.png",
 
-  "dependencies": ["keeper"],
+  "dependencies": ["keeper", "stash", "logos_beacon"],
+  "codegen": { "rep": "src/keeper_ui.rep" },
 
   "nix": {
     "packages": {
