@@ -1,11 +1,26 @@
 #pragma once
 
 #include <QObject>
+#include <QString>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QByteArray>
 
-class KeeperPlugin;
+/**
+ * KeeperBridgeHost — the minimal, Qt-string surface the bridge needs from its host.
+ *
+ * Decouples the bridge from the (now Qt-free public) KeeperImpl: the universal
+ * pimpl (KeeperImpl::Impl) implements this interface, exposing the same three
+ * QString-returning methods the bridge used to call on KeeperPlugin directly.
+ */
+class KeeperBridgeHost
+{
+public:
+    virtual ~KeeperBridgeHost() = default;
+    virtual QString preserveItem(const QString& urlOrId) = 0;
+    virtual QString getQueue() = 0;
+    virtual QString getLog()   = 0;
+};
 
 /**
  * KeeperHttpBridge — localhost HTTP/1.1 API for the Keeper Chrome extension.
@@ -23,7 +38,7 @@ class KeeperHttpBridge : public QObject
 {
     Q_OBJECT
 public:
-    explicit KeeperHttpBridge(KeeperPlugin* plugin, QObject* parent = nullptr);
+    explicit KeeperHttpBridge(KeeperBridgeHost* host, QObject* parent = nullptr);
     bool listen(quint16 port = 7355);
 
 private slots:
@@ -38,6 +53,6 @@ private:
 
     static QByteArray statusText(int code);
 
-    KeeperPlugin* plugin_;
-    QTcpServer    server_;
+    KeeperBridgeHost* host_;
+    QTcpServer        server_;
 };

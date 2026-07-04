@@ -1,11 +1,13 @@
 {
   "name": "keeper",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "core",
+  "interface": "universal",
   "category": "storage",
   "description": "Preserve Internet Archive collections — download, store CIDs, inscribe on-chain",
   "main": "keeper_plugin",
   "dependencies": [],
+  "codegen": { "impl_header": "keeper_impl.h" },
 
   "nix": {
     "packages": {
@@ -14,15 +16,16 @@
     },
     "external_libraries": [],
     "cmake": {
-      "find_packages": ["Qt6 COMPONENTS Core Qml Network"],
+      "find_packages": ["Qt6 REQUIRED COMPONENTS Core Network"],
       "extra_sources": [
-        "src/keeper_plugin.cpp",
+        "src/keeper_impl.cpp",
         "src/keeper_http_bridge.cpp"
       ],
       "extra_include_dirs": [
         "src"
       ],
       "extra_link_libraries": [
+        "Qt6::Core",
         "Qt6::Network"
       ]
     }

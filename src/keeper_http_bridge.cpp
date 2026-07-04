@@ -1,5 +1,4 @@
 #include "keeper_http_bridge.h"
-#include "keeper_plugin.h"
 
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -9,8 +8,8 @@
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
-KeeperHttpBridge::KeeperHttpBridge(KeeperPlugin* plugin, QObject* parent)
-    : QObject(parent), plugin_(plugin)
+KeeperHttpBridge::KeeperHttpBridge(KeeperBridgeHost* host, QObject* parent)
+    : QObject(parent), host_(host)
 {
     connect(&server_, &QTcpServer::newConnection, this, &KeeperHttpBridge::onNewConnection);
 }
@@ -71,13 +70,13 @@ void KeeperHttpBridge::handleRequest(QTcpSocket* socket, const QByteArray& raw)
         QString url;
         if (doc.isObject()) url = doc.object().value("url").toString();
         if (url.isEmpty()) { sendJson(socket, 400, R"({"error":"missing url"})"); return; }
-        sendJson(socket, 200, plugin_->preserveItem(url).toUtf8());
+        sendJson(socket, 200, host_->preserveItem(url).toUtf8());
         return;
     }
 
     // GET /queue
     if (method == "GET" && path == "/queue") {
-        sendJson(socket, 200, plugin_->getQueue().toUtf8());
+        sendJson(socket, 200, host_->getQueue().toUtf8());
         return;
     }
 
@@ -85,7 +84,7 @@ void KeeperHttpBridge::handleRequest(QTcpSocket* socket, const QByteArray& raw)
     if (method == "GET" && path.startsWith("/status/")) {
         QString id = QString::fromUtf8(path.mid(8));
         // Check live queue
-        for (const auto& v : QJsonDocument::fromJson(plugin_->getQueue().toUtf8()).array()) {
+        for (const auto& v : QJsonDocument::fromJson(host_->getQueue().toUtf8()).array()) {
             QJsonObject obj = v.toObject();
             if (obj["id"].toString() == id) {
                 QJsonObject resp;
@@ -96,7 +95,7 @@ void KeeperHttpBridge::handleRequest(QTcpSocket* socket, const QByteArray& raw)
             }
         }
         // Check completed log
-        for (const auto& v : QJsonDocument::fromJson(plugin_->getLog().toUtf8()).array()) {
+        for (const auto& v : QJsonDocument::fromJson(host_->getLog().toUtf8()).array()) {
             QJsonObject obj = v.toObject();
             if (obj["id"].toString() == id) {
                 QJsonObject resp;

@@ -4,3 +4,7 @@ build/
 *.o
 *.a
 squashfs-root/
+doctests/logos
+doctests/pm
+doctests/modules
+doctests/result-*
