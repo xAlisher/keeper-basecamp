@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls
 import Logos.Theme // logos-design-system (native on RC3+ Basecamp) — skill: logos-design-system-adoption
+import Logos.Controls
 
 Item {
     id: root
@@ -287,15 +288,15 @@ Item {
             ColumnLayout {
                 Layout.fillWidth: true
                 spacing: 2
-                Text {
+                LogosText {
                     text: "Keeper"
-                    font.pixelSize: 20
-                    font.bold: true
+                    font.pixelSize: Theme.typography.panelTitleText
+                    font.weight: Theme.typography.weightBold
                     color: root.textPrimary
                 }
-                Text {
+                LogosText {
                     text: "Preserve Internet Archive items to Logos Storage with on-chain CID inscription."
-                    font.pixelSize: 11
+                    font.pixelSize: Theme.typography.secondaryText
                     color: root.textSecondary
                     wrapMode: Text.Wrap
                     Layout.fillWidth: true
@@ -307,7 +308,7 @@ Item {
                 height: 28
                 implicitWidth: bridgePillRow.implicitWidth + 20
                 radius: 14
-                color: Qt.rgba(0.149, 0.149, 0.149, 0.85)
+                color: root.bgSecondary
                 border.color: root.borderColor
                 border.width: 1
                 Layout.alignment: Qt.AlignVCenter
@@ -323,9 +324,9 @@ Item {
                         color: root.bridgeRunning ? root.successGreen : root.errorRed
                     }
 
-                    Text {
+                    LogosText {
                         text: root.bridgeRunning ? ("Bridge :" + root.bridgePort) : "Bridge offline"
-                        font.pixelSize: 11
+                        font.pixelSize: Theme.typography.secondaryText
                         color: root.textPrimary
                     }
                 }
@@ -337,32 +338,24 @@ Item {
             Layout.fillWidth: true
             spacing: 8
 
-            Rectangle {
+            LogosTextField {
+                id: urlField
                 Layout.fillWidth: true
-                height: 36
-                radius: 6
-                color: root.bgSecondary
-                border.color: urlField.activeFocus ? root.accentOrange : root.borderColor
-                border.width: 1
-
-                TextField {
-                    id: urlField
-                    anchors.fill: parent
-                    anchors.margins: 4
-                    background: null
-                    color: root.textPrimary
-                    font.pixelSize: 12
-                    placeholderText: "archive.org/details/… or bare identifier"
-                    placeholderTextColor: root.textMuted
-                    onAccepted: keepBtn.doKeep()
-                }
+                Layout.preferredHeight: 36
+                placeholderText: "archive.org/details/… or bare identifier"
+                placeholderTextColor: root.textMuted
+                // LogosTextField exposes no `accepted` signal (unlike a plain TextField) —
+                // wiring onAccepted directly is a hard QML load crash. Bind Enter via Keys.
+                Keys.onReturnPressed: keepBtn.doKeep()
+                Keys.onEnterPressed: keepBtn.doKeep()
             }
 
-            Rectangle {
+            LogosButton {
                 id: keepBtn
-                width: 64; height: 36
-                radius: 6
-                color: keepBtnArea.containsMouse ? "#CC4000" : root.accentOrange
+                text: "Keep"
+                Layout.preferredWidth: 64
+                Layout.preferredHeight: 36
+                implicitHeight: 36
 
                 function doKeep() {
                     var val = urlField.text.trim()
@@ -373,21 +366,7 @@ Item {
                     urlField.text = ""
                 }
 
-                Text {
-                    anchors.centerIn: parent
-                    text: "Keep"
-                    font.pixelSize: 13
-                    font.bold: true
-                    color: root.textPrimary
-                }
-
-                MouseArea {
-                    id: keepBtnArea
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: keepBtn.doKeep()
-                }
+                onClicked: keepBtn.doKeep()
             }
         }
 
@@ -400,31 +379,22 @@ Item {
                 Layout.fillWidth: true
                 spacing: 8
 
-                Text {
+                LogosText {
                     text: "Queue"
-                    font.pixelSize: 13
-                    font.bold: true
+                    font.pixelSize: Theme.typography.primaryText
+                    font.weight: Theme.typography.weightBold
                     color: root.textPrimary
                 }
 
                 Item { Layout.fillWidth: true }
 
-                Text {
+                LogosButton {
                     text: "Clear"
-                    font.pixelSize: 11
-                    color: clearQueueArea.containsMouse ? root.textSecondary : root.textMuted
                     visible: queueModel.count > 0
-
-                    MouseArea {
-                        id: clearQueueArea
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            if (!root.keeperUi) return
-                            logos.watch(root.keeperUi.clearQueue(),
-                                        function () { root.refresh() }, function () {})
-                        }
+                    onClicked: {
+                        if (!root.keeperUi) return
+                        logos.watch(root.keeperUi.clearQueue(),
+                                    function () { root.refresh() }, function () {})
                     }
                 }
             }
@@ -439,12 +409,12 @@ Item {
                 border.width: 1
                 clip: true
 
-                Text {
+                LogosText {
                     anchors.centerIn: parent
                     visible: queueModel.count === 0
                     text: "No items queued"
                     color: root.textMuted
-                    font.pixelSize: 11
+                    font.pixelSize: Theme.typography.secondaryText
                 }
 
                 ListView {
@@ -465,9 +435,9 @@ Item {
                         width: queueList.width
                         spacing: 8
 
-                        Text {
+                        LogosText {
                             text: statusIcon(status)
-                            font.pixelSize: 12
+                            font.pixelSize: Theme.typography.secondaryText
                             color: statusColor(status)
                             Layout.alignment: Qt.AlignVCenter
                         }
@@ -476,18 +446,18 @@ Item {
                             Layout.fillWidth: true
                             spacing: 2
 
-                            Text {
+                            LogosText {
                                 text: title || identifier
-                                font.pixelSize: 12
+                                font.pixelSize: Theme.typography.secondaryText
                                 color: root.textPrimary
                                 elide: Text.ElideRight
                                 Layout.fillWidth: true
                             }
 
-                            Text {
+                            LogosText {
                                 visible: status === "failed" && error.length > 0
                                 text: error
-                                font.pixelSize: 10
+                                font.pixelSize: Theme.typography.badgeText
                                 color: root.errorRed
                                 elide: Text.ElideRight
                                 Layout.fillWidth: true
@@ -495,37 +465,24 @@ Item {
                         }
 
                         // File progress: "3 / 5"
-                        Text {
+                        LogosText {
                             visible: totalFiles > 0 && status !== "done" && status !== "failed"
                             text: doneFiles + " / " + totalFiles
-                            font.pixelSize: 10
+                            font.pixelSize: Theme.typography.badgeText
                             color: root.textMuted
                         }
 
                         // Cancel button (queued or active only)
-                        Rectangle {
+                        LogosButton {
                             visible: status === "queued" || status === "active"
-                            width: 20; height: 20
-                            radius: 4
-                            color: cancelArea.containsMouse ? "#3A2020" : "transparent"
-
-                            Text {
-                                anchors.centerIn: parent
-                                text: "✕"
-                                font.pixelSize: 10
-                                color: root.textMuted
-                            }
-
-                            MouseArea {
-                                id: cancelArea
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: {
-                                    if (!root.keeperUi) return
-                                    logos.watch(root.keeperUi.cancelItem(identifier),
-                                                function () { root.refresh() }, function () {})
-                                }
+                            text: "✕"
+                            Layout.preferredWidth: 24
+                            Layout.preferredHeight: 24
+                            implicitHeight: 24
+                            onClicked: {
+                                if (!root.keeperUi) return
+                                logos.watch(root.keeperUi.cancelItem(identifier),
+                                            function () { root.refresh() }, function () {})
                             }
                         }
                     }
@@ -543,31 +500,22 @@ Item {
                 Layout.fillWidth: true
                 spacing: 8
 
-                Text {
+                LogosText {
                     text: "Log"
-                    font.pixelSize: 13
-                    font.bold: true
+                    font.pixelSize: Theme.typography.primaryText
+                    font.weight: Theme.typography.weightBold
                     color: root.textPrimary
                 }
 
                 Item { Layout.fillWidth: true }
 
-                Text {
+                LogosButton {
                     text: "Clear"
-                    font.pixelSize: 11
-                    color: clearArea.containsMouse ? root.textSecondary : root.textMuted
                     visible: logModel.count > 0
-
-                    MouseArea {
-                        id: clearArea
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            if (!root.keeperUi) return
-                            logos.watch(root.keeperUi.clearLog(),
-                                        function () { root.refresh() }, function () {})
-                        }
+                    onClicked: {
+                        if (!root.keeperUi) return
+                        logos.watch(root.keeperUi.clearLog(),
+                                    function () { root.refresh() }, function () {})
                     }
                 }
             }
@@ -576,17 +524,17 @@ Item {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 radius: 6
-                color: "#0D0D0D"
+                color: root.bgPrimary
                 border.color: root.borderColor
                 border.width: 1
                 clip: true
 
-                Text {
+                LogosText {
                     anchors.centerIn: parent
                     visible: logModel.count === 0
                     text: "No entries yet"
                     color: root.textMuted
-                    font.pixelSize: 11
+                    font.pixelSize: Theme.typography.secondaryText
                 }
 
                 ListView {
@@ -663,50 +611,33 @@ Item {
                                 spacing: 6
                                 visible: entryCollectionCid !== ""
 
-                                Text {
+                                LogosText {
                                     text: "[" + fmtTime(entryTs) + "] Beacon → Logos Blockchain:"
-                                    font.pixelSize: 11
+                                    font.pixelSize: Theme.typography.secondaryText
                                     font.family: "monospace"
                                     color: root.textSecondary
                                 }
 
                                 // Confirmed: truncated hash
-                                Text {
+                                LogosText {
                                     visible: logDel.inscDone
                                     text: entryTxHash.substring(0, 16) + "…"
-                                    font.pixelSize: 10
+                                    font.pixelSize: Theme.typography.badgeText
                                     font.family: "monospace"
                                     color: root.successGreen
                                 }
 
                                 // Copy URL button (confirmed)
-                                Rectangle {
+                                LogosButton {
                                     visible: logDel.inscDone
-                                    height: 18
-                                    implicitWidth: kCopyLbl.implicitWidth + 14
-                                    radius: 3
-                                    color: kCopyArea.pressed      ? "#CC4000"
-                                         : kCopyArea.containsMouse ? "#FF6B1A" : root.bgSecondary
-                                    border.color: root.borderColor; border.width: 1
-
-                                    Text {
-                                        id: kCopyLbl
-                                        anchors.centerIn: parent
-                                        text: "copy URL"
-                                        font.pixelSize: 9
-                                        color: root.textPrimary
-                                    }
-
-                                    MouseArea {
-                                        id: kCopyArea
-                                        anchors.fill: parent
-                                        hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                                        onClicked: {
-                                            clipboard.text = entryExplorerUrl
-                                            clipboard.forceActiveFocus()
-                                            clipboard.selectAll()
-                                            clipboard.copy()
-                                        }
+                                    text: "copy URL"
+                                    Layout.preferredHeight: 20
+                                    implicitHeight: 20
+                                    onClicked: {
+                                        clipboard.text = entryExplorerUrl
+                                        clipboard.forceActiveFocus()
+                                        clipboard.selectAll()
+                                        clipboard.copy()
                                     }
                                 }
 
@@ -715,7 +646,7 @@ Item {
                                     visible: logDel.inscInFlight
                                     Layout.fillWidth: true
                                     height: 4; radius: 2
-                                    color: "#262626"
+                                    color: root.borderColor
 
                                     Rectangle {
                                         width: parent.width * logDel.inscProgress
@@ -726,22 +657,22 @@ Item {
                                 }
 
                                 // Time estimate
-                                Text {
+                                LogosText {
                                     visible: logDel.inscInFlight && logDel.inscTimeEst.length > 0
                                     text: logDel.inscTimeEst
-                                    font.pixelSize: 10
+                                    font.pixelSize: Theme.typography.badgeText
                                     color: root.textMuted
                                 }
 
                                 // Status label when no slot info yet
-                                Text {
+                                LogosText {
                                     visible: logDel.inscInFlight && entrySlotFrom <= 0
                                     text: {
                                         if (entryInscriptionStatus === "finalizing") return "finalizing…"
                                         if (entryInscriptionStatus === "submitted")  return "submitted…"
                                         return "queued…"
                                     }
-                                    font.pixelSize: 10
+                                    font.pixelSize: Theme.typography.badgeText
                                     color: root.textMuted
                                 }
                             }
