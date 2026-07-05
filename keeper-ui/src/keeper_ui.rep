@@ -40,5 +40,6 @@ class KeeperUi
 
     // Health probe.
     SLOT(QString refreshStashStatus())
+    SLOT(QString getKeeperChannel())   // beacon.getSourceChannel("keeper") for proof links
     SLOT(QString ping())
 }

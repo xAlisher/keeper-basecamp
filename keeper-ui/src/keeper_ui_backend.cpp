@@ -104,6 +104,14 @@ QString KeeperUiBackend::refreshStashStatus()
     return QStringLiteral("{}");
 }
 
+QString KeeperUiBackend::getKeeperChannel()
+{
+    // keeper's per-module channel via beacon (universal, sync-safe) — for explorer.logos.live/#<channel>
+    if (!isContextReady()) return "{\"error\":\"context not ready\"}";
+    return resultToJson(modules().logos_beacon.getSourceChannel("keeper"));
+}
+
+
 
 
 QString KeeperUiBackend::clearQueue()

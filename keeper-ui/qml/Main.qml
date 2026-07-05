@@ -30,6 +30,7 @@ Item {
     property var    pendingUpload:  null   // {id, file, path} while uploading
     property var    beaconLogMap:   ({})   // cid → {txHash, slotFrom, libAtSubmit, status}
     property string explorerUrl:    "https://logosblocks.noders.services"
+    property string keeperChannel:  ""   // keeper's per-module channel (beacon.getSourceChannel)
     property string inscriptionFormat: "collection"   // "collection" (IA-Archiver) | "cid" (Legacy)
     property bool   configLoaded:      false
     property bool   settingsOpen:      false
@@ -113,8 +114,8 @@ Item {
                 entrySize:  fmtSize(entry.totalSize || 0),
                 entryCollectionCid: collCid,
                 entryTxHash: txHash,
-                entryExplorerUrl: txHash
-                    ? root.explorerUrl + "/txs/" + txHash
+                entryExplorerUrl: (txHash && root.keeperChannel.length > 0)
+                    ? "https://explorer.logos.live/#" + root.keeperChannel
                     : "",
                 entryInscriptionStatus: bEntry.status || (txHash ? "confirmed" : (collCid ? "submitted" : "")),
                 entrySlotFrom:    bEntry.slotFrom    || 0,
@@ -145,6 +146,13 @@ Item {
 
         // Bridge status (keeper, sync forward)
         logos.watch(root.keeperUi.refreshStashStatus(), function () {}, function () {})
+
+        if (root.keeperChannel.length === 0 && root.keeperUi) {
+            logos.watch(root.keeperUi.getKeeperChannel(), function (raw) {
+                var ch = callModuleParse(raw)
+                if (typeof ch === "string" && /^[0-9a-f]{64}$/.test(ch)) root.keeperChannel = ch
+            }, function () {})
+        }
 
         logos.watch(root.keeperUi.getBridgeStatus(), function (raw) {
             var bRaw = callModuleParse(raw)
