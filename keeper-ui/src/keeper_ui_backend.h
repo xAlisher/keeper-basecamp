@@ -31,6 +31,7 @@ public:
     QString getConfig() override;
     QString setConfig(QString json) override;
     QString refreshStashStatus() override;
+    QString getKeeperChannel() override;
     QString clearQueue() override;
     QString cancelItem(QString id) override;
     QString clearLog() override;

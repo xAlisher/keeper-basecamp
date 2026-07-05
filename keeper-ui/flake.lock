@@ -56995,11 +56995,11 @@
         "zone_sequencer": "zone_sequencer"
       },
       "locked": {
-        "lastModified": 1783126467,
-        "narHash": "sha256-Ib+y26GQdXZcxzm1mSezHzl85pyOMBoZK1clOXMoIUM=",
+        "lastModified": 1783237223,
+        "narHash": "sha256-AmU3eJXQaOG/IuE8o6rl8R9afdfJHLfsIAx6ZZJfjLA=",
         "ref": "main",
-        "rev": "291120b410e0a2c3b7e54c65251f511b1992396d",
-        "revCount": 61,
+        "rev": "6f0d8f97e452ccddc718bc2ac66e87291f90fe4a",
+        "revCount": 67,
         "type": "git",
         "url": "file:///home/alisher/basecamp/modules/beacon-basecamp"
       },
