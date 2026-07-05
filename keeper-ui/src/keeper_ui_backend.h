@@ -28,6 +28,8 @@ public:
     QString getPendingUpload() override;
     QString getLog() override;
     QString preserveItem(QString urlOrId) override;
+    QString getConfig() override;
+    QString setConfig(QString json) override;
     QString clearQueue() override;
     QString cancelItem(QString id) override;
     QString clearLog() override;

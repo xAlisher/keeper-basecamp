@@ -69,6 +69,19 @@ QString KeeperUiBackend::preserveItem(QString urlOrId)
     return resultToJson(modules().keeper.preserveItem(urlOrId));
 }
 
+QString KeeperUiBackend::getConfig()
+{
+    if (!isContextReady()) return "{\"error\":\"context not ready\"}";
+    return resultToJson(modules().keeper.getConfig());
+}
+
+QString KeeperUiBackend::setConfig(QString json)
+{
+    if (!isContextReady()) return "{\"error\":\"context not ready\"}";
+    return resultToJson(modules().keeper.setConfig(json));
+}
+
+
 QString KeeperUiBackend::clearQueue()
 {
     if (!isContextReady()) return "{\"error\":\"context not ready\"}";

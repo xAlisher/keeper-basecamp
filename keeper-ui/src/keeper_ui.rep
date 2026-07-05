@@ -20,6 +20,8 @@ class KeeperUi
     SLOT(QString getPendingUpload())
     SLOT(QString getLog())
     SLOT(QString preserveItem(QString urlOrId))
+    SLOT(QString getConfig())
+    SLOT(QString setConfig(QString json))
     SLOT(QString clearQueue())
     SLOT(QString cancelItem(QString id))
     SLOT(QString clearLog())
