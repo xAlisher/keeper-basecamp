@@ -31,6 +31,8 @@ Item {
     property var    beaconLogMap:   ({})   // cid → {txHash, slotFrom, libAtSubmit, status}
     property string explorerUrl:    "https://logosblocks.noders.services"
     property string keeperChannel:  ""   // keeper's per-module channel (beacon.getSourceChannel)
+    property string copiedCid:      ""   // per-row "copied ✓" flag — ROOT level so it survives rebuildLog()
+    property bool   copiedAll:      false
     property string inscriptionFormat: "collection"   // "collection" (IA-Archiver) | "cid" (Legacy)
     property bool   configLoaded:      false
     property bool   settingsOpen:      false
@@ -287,6 +289,9 @@ Item {
         clipboard.text = out
         clipboard.forceActiveFocus(); clipboard.selectAll(); clipboard.copy()
     }
+
+    Timer { id: keeperCopiedReset;    interval: 1200; onTriggered: root.copiedCid = "" }
+    Timer { id: keeperCopiedAllReset; interval: 1000; onTriggered: root.copiedAll = false }
 
     // Clipboard helper — zero-opacity TextEdit used to copy text to clipboard
     // Must NOT be visible:false — invisible items can't receive focus needed for copy()
@@ -594,14 +599,12 @@ Item {
                 Item { Layout.fillWidth: true }
 
                 LogosButton {
-                    id: copyAllBtn
-                    text: "\u29C9"                      // copy-all glyph (\u2192 \u2713 on copy)
+                    text: root.copiedAll ? "\u2713" : "\u29C9"   // copy-all glyph -> checkmark (root flag survives rebuild)
                     visible: logModel.count > 0
                     implicitWidth: 28; implicitHeight: 28
                     Layout.preferredWidth: 28; Layout.preferredHeight: 28
                     radius: 14                           // circular
-                    Timer { id: copyAllReset; interval: 1000; onTriggered: copyAllBtn.text = "\u29C9" }
-                    onClicked: { root.copyLog(); copyAllBtn.text = "\u2713"; copyAllReset.restart() }
+                    onClicked: { root.copyLog(); root.copiedAll = true; keeperCopiedAllReset.restart() }
                 }
                 LogosButton {
                     text: "\uD83D\uDDD1"               // trash (clear)
@@ -726,18 +729,16 @@ Item {
 
                                 // Copy URL button (confirmed)
                                 LogosButton {
-                                    id: copyUrlBtn
                                     visible: logDel.inscDone
-                                    text: "copy URL"
+                                    text: (root.copiedCid !== "" && root.copiedCid === entryCollectionCid) ? "copied ✓" : "copy URL"
                                     Layout.preferredHeight: 20
                                     implicitHeight: 20
-                                    Timer { id: copyUrlReset; interval: 1200; onTriggered: copyUrlBtn.text = "copy URL" }
                                     onClicked: {
                                         clipboard.text = entryExplorerUrl
                                         clipboard.forceActiveFocus()
                                         clipboard.selectAll()
                                         clipboard.copy()
-                                        copyUrlBtn.text = "copied ✓"; copyUrlReset.restart()
+                                        root.copiedCid = entryCollectionCid; keeperCopiedReset.restart()
                                     }
                                 }
 
