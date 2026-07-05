@@ -258,6 +258,16 @@ Item {
         }
     }
 
+    function copyLog() {
+        var out = ""
+        for (var i = 0; i < logModel.count; i++) {
+            var u = logModel.get(i).entryExplorerUrl
+            if (u) out += u + "\n"
+        }
+        clipboard.text = out
+        clipboard.forceActiveFocus(); clipboard.selectAll(); clipboard.copy()
+    }
+
     // Clipboard helper — zero-opacity TextEdit used to copy text to clipboard
     // Must NOT be visible:false — invisible items can't receive focus needed for copy()
     TextEdit {
@@ -303,33 +313,11 @@ Item {
                 }
             }
 
-            // Bridge status pill
-            Rectangle {
-                height: 28
-                implicitWidth: bridgePillRow.implicitWidth + 20
-                radius: 14
-                color: root.bgSecondary
-                border.color: root.borderColor
-                border.width: 1
+            // Bridge status pill — DS badge (green=running / red=offline)
+            LogosBadge {
                 Layout.alignment: Qt.AlignVCenter
-
-                RowLayout {
-                    id: bridgePillRow
-                    anchors { left: parent.left; leftMargin: 10; verticalCenter: parent.verticalCenter }
-                    spacing: 6
-
-                    Rectangle {
-                        width: 7; height: 7; radius: 4
-                        Layout.alignment: Qt.AlignVCenter
-                        color: root.bridgeRunning ? root.successGreen : root.errorRed
-                    }
-
-                    LogosText {
-                        text: root.bridgeRunning ? ("Bridge :" + root.bridgePort) : "Bridge offline"
-                        font.pixelSize: Theme.typography.secondaryText
-                        color: root.textPrimary
-                    }
-                }
+                text: root.bridgeRunning ? ("bridge :" + root.bridgePort) : "bridge offline"
+                color: root.bridgeRunning ? Theme.palette.success : Theme.palette.error
             }
         }
 
@@ -341,7 +329,7 @@ Item {
             LogosTextField {
                 id: urlField
                 Layout.fillWidth: true
-                Layout.preferredHeight: 36
+                Layout.alignment: Qt.AlignVCenter
                 placeholderText: "archive.org/details/… or bare identifier"
                 placeholderTextColor: root.textMuted
                 // LogosTextField exposes no `accepted` signal (unlike a plain TextField) —
@@ -510,8 +498,19 @@ Item {
                 Item { Layout.fillWidth: true }
 
                 LogosButton {
-                    text: "Clear"
+                    text: "\u29C9"                      // copy-all glyph
                     visible: logModel.count > 0
+                    implicitWidth: 28; implicitHeight: 28
+                    Layout.preferredWidth: 28; Layout.preferredHeight: 28
+                    radius: 14                           // circular
+                    onClicked: root.copyLog()
+                }
+                LogosButton {
+                    text: "\uD83D\uDDD1"               // trash (clear)
+                    visible: logModel.count > 0
+                    implicitWidth: 28; implicitHeight: 28
+                    Layout.preferredWidth: 28; Layout.preferredHeight: 28
+                    radius: 14                           // circular
                     onClicked: {
                         if (!root.keeperUi) return
                         logos.watch(root.keeperUi.clearLog(),
