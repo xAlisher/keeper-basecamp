@@ -13,6 +13,7 @@ class KeeperUi
 {
     PROP(QString status="Ready" READONLY)
     PROP(QString lastUpload="" READONLY)
+    PROP(QString stashStatus="offline" READONLY)   // "ready"|"starting"|"offline"
 
     // ── keeper (universal → SYNC forward) ─────────────────────────────────────
     SLOT(QString getBridgeStatus())
@@ -38,5 +39,6 @@ class KeeperUi
     SLOT(QString startUpload(QString path, QString id, QString file))
 
     // Health probe.
+    SLOT(QString refreshStashStatus())
     SLOT(QString ping())
 }

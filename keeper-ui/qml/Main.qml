@@ -144,6 +144,8 @@ Item {
         }
 
         // Bridge status (keeper, sync forward)
+        logos.watch(root.keeperUi.refreshStashStatus(), function () {}, function () {})
+
         logos.watch(root.keeperUi.getBridgeStatus(), function (raw) {
             var bRaw = callModuleParse(raw)
             if (bRaw) {
@@ -329,6 +331,18 @@ Item {
                 Layout.alignment: Qt.AlignVCenter
                 text: root.bridgeRunning ? ("bridge :" + root.bridgePort) : "bridge offline"
                 color: root.bridgeRunning ? Theme.palette.success : Theme.palette.error
+            }
+
+            // Stash: Storage status — bound to the backend's stashStatus PROP (async-polled)
+            LogosBadge {
+                Layout.alignment: Qt.AlignVCenter
+                readonly property string ss: root.keeperUi ? root.keeperUi.stashStatus : "offline"
+                text: ss === "ready"    ? "stash: storage ready"
+                    : ss === "starting" ? "stash: storage starting"
+                    :                     "stash not launched"
+                color: ss === "ready"    ? Theme.palette.success
+                     : ss === "starting" ? Theme.palette.warning
+                     :                     root.textMuted
             }
 
             // cogwheel — settings toggle (receiver pattern; no gear asset ships)

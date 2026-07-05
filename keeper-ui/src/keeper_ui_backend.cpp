@@ -81,6 +81,30 @@ QString KeeperUiBackend::setConfig(QString json)
     return resultToJson(modules().keeper.setConfig(json));
 }
 
+QString KeeperUiBackend::refreshStashStatus()
+{
+    // "Ready for preserving" needs the storage node ACTUALLY up, not just start()-returned.
+    // getStorageInfo.ready flips true right after start() (StashPlugin.cpp:182) — before the node
+    // connects; preserving in that window fails. The reliable signal is the `storageStart` event,
+    // which stash logs as "storage_module: storageStart event" (the user's 2nd Storage event).
+    // So: green ONLY once that event is in stash's log; yellow while started-but-not-connected.
+    if (!isContextReady()) { setStashStatus(QStringLiteral("offline")); return QStringLiteral("{}"); }
+    modules().stash.getStorageInfoAsync([this](QString infoRaw) {
+        const QJsonObject info = QJsonDocument::fromJson(infoRaw.toUtf8()).object();
+        const bool started  = info.value(QStringLiteral("ready")).toBool();      // start() returned (premature)
+        const bool starting = info.value(QStringLiteral("starting")).toBool();
+        modules().stash.getLogAsync([this, started, starting](QString logRaw) {
+            const bool connected = logRaw.contains(QStringLiteral("storageStart event"));  // reliable: node up
+            const QString st = connected             ? QStringLiteral("ready")
+                             : (started || starting) ? QStringLiteral("starting")
+                             :                         QStringLiteral("offline");
+            setStashStatus(st);
+        }, Timeout());
+    }, Timeout());
+    return QStringLiteral("{}");
+}
+
+
 
 QString KeeperUiBackend::clearQueue()
 {
