@@ -30,6 +30,9 @@ Item {
     property var    pendingUpload:  null   // {id, file, path} while uploading
     property var    beaconLogMap:   ({})   // cid → {txHash, slotFrom, libAtSubmit, status}
     property string explorerUrl:    "https://logosblocks.noders.services"
+    property string inscriptionFormat: "collection"   // "collection" (IA-Archiver) | "cid" (Legacy)
+    property bool   configLoaded:      false
+    property bool   settingsOpen:      false
     property bool   explorerUrlLoaded: false
 
     // ── keeper_ui QtRO backend (v0.2 universal) ─────────────────────────────
@@ -141,6 +144,8 @@ Item {
         }
 
         // Bridge status (keeper, sync forward)
+        logos.watch(root.keeperUi.refreshStashStatus(), function () {}, function () {})
+
         logos.watch(root.keeperUi.getBridgeStatus(), function (raw) {
             var bRaw = callModuleParse(raw)
             if (bRaw) {
@@ -150,6 +155,13 @@ Item {
         }, function () {})
 
         // Queue (keeper, sync forward)
+        if (!root.configLoaded) {
+            logos.watch(root.keeperUi.getConfig(), function (raw) {
+                var c = callModuleParse(raw)
+                if (c && c.inscriptionFormat) { root.inscriptionFormat = c.inscriptionFormat; root.configLoaded = true }
+            }, function () {})
+        }
+
         logos.watch(root.keeperUi.getQueue(), function (raw) {
             var qRaw = callModuleParse(raw)
             if (!Array.isArray(qRaw)) return
@@ -315,9 +327,88 @@ Item {
 
             // Bridge status pill — DS badge (green=running / red=offline)
             LogosBadge {
+                id: bridgeBadge
                 Layout.alignment: Qt.AlignVCenter
                 text: root.bridgeRunning ? ("bridge :" + root.bridgePort) : "bridge offline"
                 color: root.bridgeRunning ? Theme.palette.success : Theme.palette.error
+            }
+
+            // Stash: Storage status — bound to the backend's stashStatus PROP (async-polled)
+            LogosBadge {
+                Layout.alignment: Qt.AlignVCenter
+                readonly property string ss: root.keeperUi ? root.keeperUi.stashStatus : "offline"
+                text: ss === "ready"    ? "stash: storage ready"
+                    : ss === "starting" ? "stash: storage starting"
+                    :                     "stash not launched"
+                color: ss === "ready"    ? Theme.palette.success
+                     : ss === "starting" ? Theme.palette.warning
+                     :                     root.textMuted
+            }
+
+            // cogwheel — settings toggle (receiver pattern; no gear asset ships)
+            Rectangle {
+                implicitWidth: bridgeBadge.implicitHeight; implicitHeight: bridgeBadge.implicitHeight
+                radius: Theme.spacing.radiusSmall
+                Layout.alignment: Qt.AlignVCenter
+                color: gearArea.containsMouse ? root.bgSecondary : "transparent"
+                border.color: root.settingsOpen ? Theme.palette.primary : root.borderColor; border.width: 1
+                LogosText {
+                    anchors.fill: parent
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                    text: "\u2699"
+                    font.pixelSize: Theme.typography.primaryText
+                    color: root.settingsOpen ? Theme.palette.primary : root.textSecondary
+                }
+                MouseArea {
+                    id: gearArea; anchors.fill: parent; hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.settingsOpen = !root.settingsOpen
+                }
+            }
+        }
+
+
+        // ── Settings pane (cogwheel) ──────────────────────────────────────
+        Rectangle {
+            Layout.fillWidth: true
+            visible: root.settingsOpen
+            implicitHeight: setCol.implicitHeight + Theme.spacing.large
+            color: root.bgSecondary; radius: Theme.spacing.radiusMedium
+            border.color: root.borderColor; border.width: 1
+
+            ColumnLayout {
+                id: setCol
+                anchors { top: parent.top; left: parent.left; right: parent.right; margins: Theme.spacing.small }
+                spacing: Theme.spacing.small
+
+                LogosText {
+                    text: "Inscription format"
+                    color: root.textSecondary
+                    font.pixelSize: Theme.typography.secondaryText
+                    font.weight: Theme.typography.weightBold
+                }
+                LogosComboBox {
+                    id: formatBox
+                    Layout.fillWidth: true
+                    model: ["CID-based — CIDs on Blockchain (Legacy)",
+                            "Collection ID — CIDs stay in Storage (IA-Archiver)"]
+                    currentIndex: root.inscriptionFormat === "cid" ? 0 : 1
+                    onActivated: function (index) {
+                        var fmt = index === 0 ? "cid" : "collection"
+                        root.inscriptionFormat = fmt
+                        if (root.keeperUi)
+                            logos.watch(root.keeperUi.setConfig(JSON.stringify({ inscriptionFormat: fmt })),
+                                        function () {}, function () {})
+                    }
+                }
+                LogosText {
+                    text: "CID-based inscribes every file CID on-chain (legacy). Collection ID inscribes one key — CIDs stay in Storage."
+                    color: root.textMuted
+                    font.pixelSize: Theme.typography.badgeText
+                    wrapMode: Text.Wrap
+                    Layout.fillWidth: true
+                }
             }
         }
 
@@ -329,9 +420,7 @@ Item {
             LogosTextField {
                 id: urlField
                 Layout.fillWidth: true
-                Layout.alignment: Qt.AlignVCenter
                 placeholderText: "archive.org/details/… or bare identifier"
-                placeholderTextColor: root.textMuted
                 // LogosTextField exposes no `accepted` signal (unlike a plain TextField) —
                 // wiring onAccepted directly is a hard QML load crash. Bind Enter via Keys.
                 Keys.onReturnPressed: keepBtn.doKeep()
@@ -341,9 +430,8 @@ Item {
             LogosButton {
                 id: keepBtn
                 text: "Keep"
-                Layout.preferredWidth: 64
-                Layout.preferredHeight: 36
-                implicitHeight: 36
+                implicitWidth: 64
+                implicitHeight: 40
 
                 function doKeep() {
                     var val = urlField.text.trim()

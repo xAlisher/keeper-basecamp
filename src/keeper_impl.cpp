@@ -78,6 +78,7 @@ struct KeeperImpl::Impl : public QObject, public KeeperBridgeHost
     // Config
     int  maxFilesPerItem_    = 20;
     bool skipDerivatives_    = true;
+    QString inscriptionFormat_ = "collection";  // "collection" (IA-Archiver) | "cid" (Legacy)
 
     QString m_persistencePath;
 
@@ -230,9 +231,10 @@ struct KeeperImpl::Impl : public QObject, public KeeperBridgeHost
 
     QString getConfig()
     {
-        return QString(R"({"maxFilesPerItem":%1,"skipDerivatives":%2})")
+        return QString(R"({"maxFilesPerItem":%1,"skipDerivatives":%2,"inscriptionFormat":"%3"})")
             .arg(maxFilesPerItem_)
-            .arg(skipDerivatives_ ? "true" : "false");
+            .arg(skipDerivatives_ ? "true" : "false")
+            .arg(inscriptionFormat_);
     }
 
     QString setConfig(const QString& json)
@@ -242,6 +244,10 @@ struct KeeperImpl::Impl : public QObject, public KeeperBridgeHost
         QJsonObject obj = doc.object();
         if (obj.contains("maxFilesPerItem"))  maxFilesPerItem_  = obj["maxFilesPerItem"].toInt(maxFilesPerItem_);
         if (obj.contains("skipDerivatives"))  skipDerivatives_  = obj["skipDerivatives"].toBool(skipDerivatives_);
+        if (obj.contains("inscriptionFormat")) {
+            const QString fmt = obj["inscriptionFormat"].toString();
+            if (fmt == "cid" || fmt == "collection") inscriptionFormat_ = fmt;
+        }
         return R"({"success":true})";
     }
 
@@ -360,10 +366,18 @@ struct KeeperImpl::Impl : public QObject, public KeeperBridgeHost
             item->currentFile++;
 
         if (item->currentFile >= item->files.size()) {
-            // All files uploaded — inscribe directly with ia:{identifier} as the stable key
+            // All files uploaded — inscribe per the configured format (keeper decides; beacon relays).
             item->status = "inscribing";
             saveQueue();
-            inscribeToBeacon(item->identifier, "ia:" + item->identifier);
+            if (inscriptionFormat_ == "cid") {
+                // CID-based (Legacy): inscribe each file's CID on-chain.
+                for (const auto& f : item->files)
+                    if (f.status == "done" && !f.cid.isEmpty())
+                        inscribeToBeacon(item->identifier, f.cid);
+            } else {
+                // Collection ID (IA-Archiver): one inscription of the stable collection key; CIDs stay in Storage.
+                inscribeToBeacon(item->identifier, "ia:" + item->identifier);
+            }
             return;
         }
 
