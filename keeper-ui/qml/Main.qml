@@ -594,12 +594,14 @@ Item {
                 Item { Layout.fillWidth: true }
 
                 LogosButton {
-                    text: "\u29C9"                      // copy-all glyph
+                    id: copyAllBtn
+                    text: "\u29C9"                      // copy-all glyph (\u2192 \u2713 on copy)
                     visible: logModel.count > 0
                     implicitWidth: 28; implicitHeight: 28
                     Layout.preferredWidth: 28; Layout.preferredHeight: 28
                     radius: 14                           // circular
-                    onClicked: root.copyLog()
+                    Timer { id: copyAllReset; interval: 1000; onTriggered: copyAllBtn.text = "\u29C9" }
+                    onClicked: { root.copyLog(); copyAllBtn.text = "\u2713"; copyAllReset.restart() }
                 }
                 LogosButton {
                     text: "\uD83D\uDDD1"               // trash (clear)
@@ -724,15 +726,18 @@ Item {
 
                                 // Copy URL button (confirmed)
                                 LogosButton {
+                                    id: copyUrlBtn
                                     visible: logDel.inscDone
                                     text: "copy URL"
                                     Layout.preferredHeight: 20
                                     implicitHeight: 20
+                                    Timer { id: copyUrlReset; interval: 1200; onTriggered: copyUrlBtn.text = "copy URL" }
                                     onClicked: {
                                         clipboard.text = entryExplorerUrl
                                         clipboard.forceActiveFocus()
                                         clipboard.selectAll()
                                         clipboard.copy()
+                                        copyUrlBtn.text = "copied ✓"; copyUrlReset.restart()
                                     }
                                 }
 
