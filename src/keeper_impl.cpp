@@ -524,6 +524,7 @@ struct KeeperImpl::Impl : public QObject, public KeeperBridgeHost
         for (const auto& item : std::as_const(queue_)) {
             if (item.identifier != identifier) continue;
             QJsonObject labelObj;
+            // ── legacy fields (kept so existing decoders keep working during transition) ──
             labelObj["module"] = "keeper";
             labelObj["source"] = "internet_archive";
             labelObj["id"]     = identifier;
@@ -531,13 +532,32 @@ struct KeeperImpl::Impl : public QObject, public KeeperBridgeHost
                 labelObj["title"] = item.title;
             qint64 totalSize = 0;
             QJsonArray fileArr;
+            QString thumbCid;
             for (const auto& f : item.files) {
-                if (f.status == "done" && !f.cid.isEmpty())
+                if (f.status == "done" && !f.cid.isEmpty()) {
                     fileArr.append(QJsonObject{{"name", f.name}, {"cid", f.cid}});
+                    if (f.name.contains("__ia_thumb")) thumbCid = f.cid;   // cover image
+                }
                 totalSize += f.size.toLongLong();
             }
             if (totalSize > 0) labelObj["totalSize"] = totalSize;
             if (!fileArr.isEmpty()) labelObj["files"] = fileArr;
+            // ── standard metadata (keeper#43) — OpenSea-NFT-metadata shape, self-describing so
+            //    any indexer/explorer (zonescan, ours) decodes it without custom support.
+            //    STRAWMAN pending a LEZ-specific standard co-designed with Paradox. ──
+            labelObj["name"]         = (!item.title.isEmpty() && item.title != identifier)
+                                           ? item.title : identifier;
+            labelObj["description"]  = "Internet Archive item preserved on Logos Storage via keeper.";
+            labelObj["external_url"] = "https://archive.org/details/" + identifier;
+            if (!thumbCid.isEmpty()) labelObj["image"] = thumbCid;   // Logos Storage CID (URI scheme TBD w/ LEZ std)
+            QJsonArray attrs;
+            attrs.append(QJsonObject{{"trait_type", "source"}, {"value", "internet_archive"}});
+            attrs.append(QJsonObject{{"trait_type", "item"},   {"value", identifier}});
+            attrs.append(QJsonObject{{"trait_type", "files"},  {"value", fileArr.size()}});
+            if (totalSize > 0)
+                attrs.append(QJsonObject{{"trait_type", "totalSize"}, {"value", QString::number(totalSize)}});
+            labelObj["attributes"] = attrs;
+            if (!fileArr.isEmpty()) labelObj["content"] = fileArr;   // pinned files under the standard key
             label = QJsonDocument(labelObj).toJson(QJsonDocument::Compact);
             break;
         }
