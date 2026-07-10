@@ -1,60 +1,32 @@
-# Halt — 2026-06-08
+# Halt — 2026-07-10
+
+## ▶ Resume this session
+```bash
+cd ~/basecamp/modules/keeper-basecamp && claude --resume 1e8dfb1b-c6d0-4a34-94ee-d7d6726332e9
+```
+Fallback: `claude --continue`.
 
 ## Where we stopped
-
-Published LGX releases for all 5 IA loop modules (keeper, stash, beacon, cord, keycard),
-updated keeper README with LGX install path, corrected zone sequencer / storage module
-dependencies, and added keeper-extension repo link. Session was mostly docs + packaging —
-no code changes to any module. Also had a strategic discussion about module consolidation
-(merge keeper+stash+beacon) and Berlin dry run readiness.
+Landed the **keeper#43 standard-metadata strawman** (OpenSea-style superset in IA-Archiver/collection mode)
+and deployed it. keeper 0.2.0 (core + ui) is the **latest** and is what's installed in BC v0.2.1. Paradox
+has since proposed the **LORE** metadata standard — we agreed to migrate to it (issue **#44**), which also
+resolves the "wrong JSON syntax" (our double-encoded stringified `label`).
 
 ## Current state
-
-- Branch: main
-- Last commit: 3b819f2 docs: fix explorer link framing, zone-seq/storage deps, add extension repo link
-- Build status: passing (all LGX builds verified; Tier 1 + integration confirmed Jun 7)
+- Branch: **main** · Last commit: `ebf24c6` (Merge: standard OpenSea-style inscription metadata [#43])
+- The strawman lives in `src/keeper_impl.cpp` `inscribeToBeacon` (~line 520): adds `name`/`description`/`external_url`/`image`/`attributes`/`content` alongside the legacy fields.
+- Build: **passing** · installed 0.2.0 = main
 - Open review: none
 
 ## Next steps (in order)
-
-1. **cord: "keep from feed"** — add Keep button to Cord's dispatch log so users can
-   preserve items from others' channels. New feature, ~1-2 weeks. Needed before Berlin.
-2. **keeper #25** — UX: inscription lifecycle states — progress bar, slots countdown
-   (keeper QML needs slotFrom/libAtSubmit from beaconLogMap; beacon already has this data)
-3. **keeper #20** — Add copy button to activity log entries (CID, identifier)
-4. **keeper #18** — Re-inscribe duplicate: bypass beacon dedup when user explicitly retries
-5. **keeper #10/#11** — Fix popup text + add Settings panel (small UI, low-risk)
-6. **keeper #9** — pairing reentrancy: add pollBusy guard to doAdd() callModule
-7. **keeper #15** — Timestamps don't match local time (timezone fix)
-8. **keeper #12/#13** — HTTP bridge security: CORS wildcard + no auth on /queue /status
-9. **stash fix/caller-source-dropped** — uncommitted changes to src/plugin/StashPlugin.cpp
-   and StashPlugin.h need review and commit before they're lost
+1. **#44** — emit **LORE** (`standard:"LORE"`, `resources[]` with `locator{protocol,id}` + attributes, object `attributes[]`); drop the stringified `label`. Co-defining with Paradox.
+2. **#39 (also flagged live this session)** — the queue **"Clear" button is giant**; make it a compact icon button. Exact spot: `keeper-ui/qml/Main.qml:480-488` (`LogosButton text:"Clear"`, after a `Layout.fillWidth` spacer) → use the trash-glyph pattern at `Main.qml:610` or a `LogosIconButton`, width-constrained. (Diagnosis posted on #39.)
+3. Proof-link cleanups (#40/#41/#38 → explorer.logos.live), subscribed-channels feed (#27).
 
 ## Blockers
-
-- none
+- LORE emit (#44) — converging on the spec with Paradox first (LORE v0.1 draft in the Discord dWeb thread); reply drafted at `~/infra/dweb/paradox-lore-reply.txt`.
 
 ## Context that's hard to re-derive
-
-- **Both root causes (zone_sequencer hash bug + sneg minority fork) were fixed on Jun 7.**
-  There was a stale plan file (mossy-tinkering-russell.md) re-raising them as open — it was
-  deleted this session. Do not re-raise these issues.
-
-- **Module consolidation decision**: merge keeper+stash+beacon into one module makes sense
-  post-Berlin (eliminates QML-mediated IPC workarounds entirely). logos-notes dependency on
-  stash/beacon is irrelevant to the IA loop decision. Not before Berlin — too risky.
-
-- **Berlin message sent to mart1n/jonny/vpavlin**: recommendation is keep modular, focus on
-  cord "keep from feed" this week, Alisher attending LANBerlin first half of day.
-
-- **LGX releases published**: all 5 modules now have GitHub Releases with core + UI LGX files.
-  beacon_ui and cord_ui had no Nix flake before this session — added mkLogosQmlModule flakes.
-  cord_ui had empty icon field that broke the build — fixed to point at Cord_sidebar.png.
-
-- **zone sequencer**: NOT shipped with AppImage. From vpavlin/zone-sequencer-module, built
-  with xAlisher/zone-sequencer-rs fork (stale-checkpoint fix). storage_module must be
-  vpavlin/logos-storage-module at v0.3.2 (9552adf) — newer versions deadlock uploadUrl.
-
-- **stash WIP**: src/plugin/StashPlugin.cpp and StashPlugin.h have uncommitted caller-source
-  changes on main (git stash was popped after LGX build). These are in-progress work, do not
-  discard.
+- keeper inscribes a **per-module channel** `derive_channel_id(SHA256(masterKey+"keeper"))` (`dcab09a0…`); the master key is **keycard-only / in-memory**, not extractable headlessly.
+- The **collection (IA-Archiver) mode** = one inscription per item, `cid:"ia:<id>"` + the metadata label. The archiver (ia-basecamp) reads it; ia#46 will read LORE.
+- LORE example (from Paradox) uses our exact `Free_as_in_Freedom` item — good starting template for #44.
